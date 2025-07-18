@@ -1,4 +1,4 @@
-import React, { FC, Ref, useEffect, useMemo, useRef, useState, } from "preact/compat";
+import React, { FC, useEffect, useMemo, useRef, useState, } from "preact/compat";
 import classNames from "classnames";
 import { ArrowDropDownIcon, CloseIcon } from "../Icons";
 import { FormEvent, MouseEvent } from "react";
@@ -40,7 +40,7 @@ const Select: FC<SelectProps> = ({
 
   const [search, setSearch] = useState("");
   const autocompleteAnchorEl = useRef<HTMLDivElement>(null);
-  const [wrapperRef, setWrapperRef] = useState<Ref<HTMLDivElement> | null>(null);
+  const [wrapperRef, setWrapperRef] = useState<React.RefObject<HTMLElement> | null>(null);
   const [openList, setOpenList] = useState(false);
 
   const inputRef = useRef<HTMLInputElement>(null);
@@ -72,6 +72,10 @@ const Select: FC<SelectProps> = ({
     setOpenList(true);
   };
 
+  const handleBlur = () => {
+    list.includes(search) && onChange(search);
+  };
+
   const handleToggleList = (e: MouseEvent<HTMLDivElement>) => {
     if (e.target instanceof HTMLInputElement || disabled) return;
     setOpenList(prev => !prev);
@@ -88,7 +92,7 @@ const Select: FC<SelectProps> = ({
     setSearch((e.target as HTMLInputElement).value);
   };
 
-  const createHandleClick = (value: string) => (e: MouseEvent) => {
+  const createHandleClick = (value: string) => (e: MouseEvent<HTMLDivElement>) => {
     handleSelected(value);
     e.stopPropagation();
   };
@@ -142,6 +146,7 @@ const Select: FC<SelectProps> = ({
               placeholder={placeholder}
               onInput={handleChange}
               onFocus={handleFocus}
+              onBlur={handleBlur}
               ref={inputRef}
               readOnly={isMobile || !searchable}
             />

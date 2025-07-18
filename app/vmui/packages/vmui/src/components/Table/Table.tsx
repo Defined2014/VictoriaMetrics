@@ -5,12 +5,16 @@ import { getComparator, stableSort } from "./helpers";
 import Tooltip from "../Main/Tooltip/Tooltip";
 import Button from "../Main/Button/Button";
 import { useEffect } from "preact/compat";
+import useCopyToClipboard from "../../hooks/useCopyToClipboard";
+
+type OrderDir = "asc" | "desc"
 
 interface TableProps<T> {
   rows: T[];
   columns: { title?: string, key: keyof Partial<T>, className?: string }[];
   defaultOrderBy: keyof T;
   copyToClipboard?: keyof T;
+  defaultOrderDir?: OrderDir;
   // TODO: Remove when pagination is implemented on the backend.
   paginationOffset: {
     startIndex: number;
@@ -18,9 +22,11 @@ interface TableProps<T> {
   }
 }
 
-const Table = <T extends object>({ rows, columns, defaultOrderBy, copyToClipboard, paginationOffset }: TableProps<T>) => {
+const Table = <T extends object>({ rows, columns, defaultOrderBy, defaultOrderDir, copyToClipboard, paginationOffset }: TableProps<T>) => {
+  const handleCopyToClipboard = useCopyToClipboard();
+
   const [orderBy, setOrderBy] = useState<keyof T>(defaultOrderBy);
-  const [orderDir, setOrderDir] = useState<"asc" | "desc">("desc");
+  const [orderDir, setOrderDir] = useState<OrderDir>(defaultOrderDir || "desc");
   const [copied, setCopied] = useState<number | null>(null);
 
   // const sortedList = useMemo(() => stableSort(rows as [], getComparator(orderDir, orderBy)),
@@ -29,8 +35,7 @@ const Table = <T extends object>({ rows, columns, defaultOrderBy, copyToClipboar
   const sortedList = useMemo(() => {
     const { startIndex, endIndex } = paginationOffset;
     return stableSort(rows as [], getComparator(orderDir, orderBy)).slice(startIndex, endIndex);
-  },
-  [rows, orderBy, orderDir, paginationOffset]);
+  }, [rows, orderBy, orderDir, paginationOffset]);
 
   const createSortHandler = (key: keyof T) => () => {
     setOrderDir((prev) => prev === "asc" && orderBy === key ? "desc" : "asc");
@@ -40,7 +45,7 @@ const Table = <T extends object>({ rows, columns, defaultOrderBy, copyToClipboar
   const createCopyHandler = (copyValue:  string | number, rowIndex: number) => async () => {
     if (copied === rowIndex) return;
     try {
-      await navigator.clipboard.writeText(String(copyValue));
+      await handleCopyToClipboard(String(copyValue));
       setCopied(rowIndex);
     } catch (e) {
       console.error(e);

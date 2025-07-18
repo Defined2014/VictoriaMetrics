@@ -9,7 +9,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/bytesutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/prompbmarshal"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promutils"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/regexutil"
 	"github.com/cespare/xxhash/v2"
 )
@@ -18,7 +18,7 @@ import (
 //
 // See https://prometheus.io/docs/prometheus/latest/configuration/configuration/#relabel_config
 type parsedRelabelConfig struct {
-	// ruleOriginal contains the original relabeling rule for the given prasedRelabelConfig.
+	// ruleOriginal contains the original relabeling rule for the given parsedRelabelConfig.
 	ruleOriginal string
 
 	SourceLabels  []string
@@ -626,12 +626,12 @@ func LabelsToString(labels []prompbmarshal.Label) string {
 
 // SortLabels sorts labels in alphabetical order.
 func SortLabels(labels []prompbmarshal.Label) {
-	x := promutils.GetLabels()
+	x := promutil.GetLabels()
 	labelsOrig := x.Labels
 	x.Labels = labels
 	x.Sort()
 	x.Labels = labelsOrig
-	promutils.PutLabels(x)
+	promutil.PutLabels(x)
 }
 
 func fillLabelReferences(dst []byte, replacement string, labels []prompbmarshal.Label) []byte {
@@ -663,8 +663,17 @@ func SanitizeLabelName(name string) string {
 	return labelNameSanitizer.Transform(name)
 }
 
+// SplitMetricNameToTokens returns tokens generated from metric name divided by unsupported Prometheus characters
+//
+// See https://prometheus.io/docs/concepts/data_model/#metric-names-and-labels
+func SplitMetricNameToTokens(name string) []string {
+	return nonAlphaNumChars.Split(name, -1)
+}
+
+var nonAlphaNumChars = regexp.MustCompile(`[^a-zA-Z0-9]`)
+
 var labelNameSanitizer = bytesutil.NewFastStringTransformer(func(s string) string {
-	return unsupportedLabelNameChars.ReplaceAllString(s, "_")
+	return unsupportedLabelNameChars.ReplaceAllLiteralString(s, "_")
 })
 
 var unsupportedLabelNameChars = regexp.MustCompile(`[^a-zA-Z0-9_]`)
@@ -677,7 +686,7 @@ func SanitizeMetricName(value string) string {
 }
 
 var metricNameSanitizer = bytesutil.NewFastStringTransformer(func(s string) string {
-	return unsupportedMetricNameChars.ReplaceAllString(s, "_")
+	return unsupportedMetricNameChars.ReplaceAllLiteralString(s, "_")
 })
 
 var unsupportedMetricNameChars = regexp.MustCompile(`[^a-zA-Z0-9_:]`)

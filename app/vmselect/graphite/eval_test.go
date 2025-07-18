@@ -36,7 +36,7 @@ func TestExecExprSuccess(t *testing.T) {
 		if err := compareSeries(ss, expectedSeries, expr); err != nil {
 			t.Fatalf("series mismatch for query %q: %s\ngot series\n%s\nexpected series\n%s", query, err, printSeriess(ss), printSeriess(expectedSeries))
 		}
-		// make sure ec isn't changed during query exection.
+		// make sure ec isn't changed during query execution.
 		if !reflect.DeepEqual(ec, &ecCopy) {
 			t.Fatalf("unexpected ec\ngot\n%v\nwant\n%v", &ecCopy, ec)
 		}
@@ -2137,6 +2137,25 @@ func TestExecExprSuccess(t *testing.T) {
 		},
 	})
 	f(`removeEmptySeries(removeBelowValue(time('a'),150),1)`, []*series{})
+	// if xFilesFactor is set, a single value in the series needs to be non-null for it to be
+	// considered non-empty
+	f(`removeEmptySeries(removeBelowValue(time('a'),150),0)`, []*series{
+		{
+			Timestamps: []int64{120000, 180000},
+			Values:     []float64{nan, 180},
+			Name:       "removeBelowValue(a,150)",
+			Tags:       map[string]string{"name": "a"},
+		},
+	})
+	f(`removeEmptySeries(removeBelowValue(time('a'),150),-1)`, []*series{
+		{
+			Timestamps: []int64{120000, 180000},
+			Values:     []float64{nan, 180},
+			Name:       "removeBelowValue(a,150)",
+			Tags:       map[string]string{"name": "a"},
+		},
+	})
+
 	f(`round(time('a',17),-1)`, []*series{
 		{
 			Timestamps:     []int64{120000, 137000, 154000, 171000, 188000, 205000},
@@ -3276,6 +3295,102 @@ func TestExecExprSuccess(t *testing.T) {
 			Timestamps: []int64{120000, 165000},
 			Values:     []float64{1, 1},
 			Name:       `divideSeries(summarize(foo.bar.baz,'45s','sum'),summarize(bar.foo.bad,'45s','sum'))`,
+			Tags:       map[string]string{"name": "foo.bar.baz", "summarize": "45s", "summarizeFunction": "sum"},
+		},
+	})
+	f(`aggregateSeriesLists(
+    summarize(
+               time('foo.bar.baz',10),
+               '45s'
+       ),
+    summarize(
+               time('bar.foo.bad',10),
+               '45s'
+       ), 'sum')`, []*series{
+		{
+			Timestamps: []int64{120000, 165000},
+			Values:     []float64{1170, 2000},
+			Name:       `sumSeries(summarize(foo.bar.baz,'45s','sum'),summarize(bar.foo.bad,'45s','sum'))`,
+			Tags:       map[string]string{"name": "foo.bar.baz", "summarize": "45s", "summarizeFunction": "sum"},
+		},
+	})
+	f(`sumSeriesLists(
+    summarize(
+               time('foo.bar.baz',10),
+               '45s'
+       ),
+    summarize(
+               time('bar.foo.bad',10),
+               '45s'
+       ))`, []*series{
+		{
+			Timestamps: []int64{120000, 165000},
+			Values:     []float64{1170, 2000},
+			Name:       `sumSeries(summarize(foo.bar.baz,'45s','sum'),summarize(bar.foo.bad,'45s','sum'))`,
+			Tags:       map[string]string{"name": "foo.bar.baz", "summarize": "45s", "summarizeFunction": "sum"},
+		},
+	})
+	f(`aggregateSeriesLists(
+    summarize(
+               time('foo.bar.baz',10),
+               '45s'
+       ),
+    summarize(
+               time('bar.foo.bad',10),
+               '45s'
+       ), 'diff')`, []*series{
+		{
+			Timestamps: []int64{120000, 165000},
+			Values:     []float64{0, 0},
+			Name:       `diffSeries(summarize(foo.bar.baz,'45s','sum'),summarize(bar.foo.bad,'45s','sum'))`,
+			Tags:       map[string]string{"name": "foo.bar.baz", "summarize": "45s", "summarizeFunction": "sum"},
+		},
+	})
+	f(`diffSeriesLists(
+    summarize(
+               time('foo.bar.baz',10),
+               '45s'
+       ),
+    summarize(
+               time('bar.foo.bad',10),
+               '45s'
+       ))`, []*series{
+		{
+			Timestamps: []int64{120000, 165000},
+			Values:     []float64{0, 0},
+			Name:       `diffSeries(summarize(foo.bar.baz,'45s','sum'),summarize(bar.foo.bad,'45s','sum'))`,
+			Tags:       map[string]string{"name": "foo.bar.baz", "summarize": "45s", "summarizeFunction": "sum"},
+		},
+	})
+	f(`aggregateSeriesLists(
+    summarize(
+               time('foo.bar.baz',10),
+               '45s'
+       ),
+    summarize(
+               time('bar.foo.bad',10),
+               '45s'
+       ), 'multiply')`, []*series{
+		{
+			Timestamps: []int64{120000, 165000},
+			Values:     []float64{342225, 1e+06},
+			Name:       `multiplySeries(summarize(foo.bar.baz,'45s','sum'),summarize(bar.foo.bad,'45s','sum'))`,
+			Tags:       map[string]string{"name": "foo.bar.baz", "summarize": "45s", "summarizeFunction": "sum"},
+		},
+	})
+	f(`multiplySeriesLists(
+    summarize(
+               time('foo.bar.baz',10),
+               '45s'
+       ),
+    summarize(
+               time('bar.foo.bad',10),
+               '45s'
+       ))`, []*series{
+		{
+			Timestamps: []int64{120000, 165000},
+			Values:     []float64{342225, 1e+06},
+			Name:       `multiplySeries(summarize(foo.bar.baz,'45s','sum'),summarize(bar.foo.bad,'45s','sum'))`,
 			Tags:       map[string]string{"name": "foo.bar.baz", "summarize": "45s", "summarizeFunction": "sum"},
 		},
 	})

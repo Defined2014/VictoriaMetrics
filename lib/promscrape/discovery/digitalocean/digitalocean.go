@@ -9,15 +9,15 @@ import (
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promauth"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promscrape/discoveryutils"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promutils"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promscrape/discoveryutil"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/proxy"
 )
 
 // SDCheckInterval defines interval for targets refresh.
 var SDCheckInterval = flag.Duration("promscrape.digitaloceanSDCheckInterval", time.Minute, "Interval for checking for changes in digital ocean. "+
 	"This works only if digitalocean_sd_configs is configured in '-promscrape.config' file. "+
-	"See https://docs.victoriametrics.com/sd_configs.html#digitalocean_sd_configs for details")
+	"See https://docs.victoriametrics.com/victoriametrics/sd_configs/#digitalocean_sd_configs for details")
 
 // SDConfig represents service discovery config for digital ocean.
 //
@@ -31,7 +31,7 @@ type SDConfig struct {
 }
 
 // GetLabels returns Digital Ocean droplet labels according to sdc.
-func (sdc *SDConfig) GetLabels(baseDir string) ([]*promutils.Labels, error) {
+func (sdc *SDConfig) GetLabels(baseDir string) ([]*promutil.Labels, error) {
 	cfg, err := getAPIConfig(sdc, baseDir)
 	if err != nil {
 		return nil, fmt.Errorf("cannot get API config: %w", err)
@@ -49,18 +49,22 @@ type droplet struct {
 	Name   string `json:"name"`
 	Status string `json:"status"`
 
-	Features []string `json:"features"`
-	Image    struct {
-		Name string `json:"name"`
-		Slug string `json:"slug"`
-	} `json:"image"`
-	SizeSlug string   `json:"size_slug"`
-	Networks networks `json:"networks"`
-	Region   struct {
-		Slug string `json:"slug"`
-	} `json:"region"`
-	Tags    []string `json:"tags"`
-	VpcUUID string   `json:"vpc_uuid"`
+	Features []string      `json:"features"`
+	Image    dropletImage  `json:"image"`
+	SizeSlug string        `json:"size_slug"`
+	Networks networks      `json:"networks"`
+	Region   dropletRegion `json:"region"`
+	Tags     []string      `json:"tags"`
+	VpcUUID  string        `json:"vpc_uuid"`
+}
+
+type dropletImage struct {
+	Name string `json:"name"`
+	Slug string `json:"slug"`
+}
+
+type dropletRegion struct {
+	Slug string `json:"slug"`
 }
 
 func (d *droplet) getIPByNet(netVersion, netType string) string {
@@ -71,7 +75,7 @@ func (d *droplet) getIPByNet(netVersion, netType string) string {
 	case "v6":
 		dropletNetworks = d.Networks.V6
 	default:
-		logger.Fatalf("BUG, unexpected network type: %s, want v4 or v6", netVersion)
+		logger.Panicf("BUG: unexpected network type: %s, want v4 or v6", netVersion)
 	}
 	for _, net := range dropletNetworks {
 		if net.Type == netType {
@@ -98,10 +102,12 @@ type listDropletResponse struct {
 }
 
 type links struct {
-	Pages struct {
-		Last string `json:"last,omitempty"`
-		Next string `json:"next,omitempty"`
-	} `json:"pages,omitempty"`
+	Pages linksPages `json:"pages,omitempty"`
+}
+
+type linksPages struct {
+	Last string `json:"last,omitempty"`
+	Next string `json:"next,omitempty"`
 }
 
 func (r *listDropletResponse) nextURLPath() (string, error) {
@@ -115,8 +121,8 @@ func (r *listDropletResponse) nextURLPath() (string, error) {
 	return u.RequestURI(), nil
 }
 
-func addDropletLabels(droplets []droplet, defaultPort int) []*promutils.Labels {
-	var ms []*promutils.Labels
+func addDropletLabels(droplets []droplet, defaultPort int) []*promutil.Labels {
+	var ms []*promutil.Labels
 	for _, droplet := range droplets {
 		if len(droplet.Networks.V4) == 0 {
 			continue
@@ -126,8 +132,8 @@ func addDropletLabels(droplets []droplet, defaultPort int) []*promutils.Labels {
 		publicIPv4 := droplet.getIPByNet("v4", "public")
 		publicIPv6 := droplet.getIPByNet("v6", "public")
 
-		addr := discoveryutils.JoinHostPort(publicIPv4, defaultPort)
-		m := promutils.NewLabels(16)
+		addr := discoveryutil.JoinHostPort(publicIPv4, defaultPort)
+		m := promutil.NewLabels(16)
 		m.Add("__address__", addr)
 		m.Add("__meta_digitalocean_droplet_id", fmt.Sprintf("%d", droplet.ID))
 		m.Add("__meta_digitalocean_droplet_name", droplet.Name)

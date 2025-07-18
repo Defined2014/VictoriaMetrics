@@ -1,108 +1,94 @@
-import { useCallback, useMemo, useState } from "preact/compat";
+import { useCallback, useEffect, useMemo, useRef, useState } from "preact/compat";
 import { getLogsUrl } from "../../../api/logs";
-import { ErrorTypes } from "../../../types";
+import { ErrorTypes, TimeParams } from "../../../types";
 import { Logs } from "../../../api/types";
-import { useTimeState } from "../../../state/time/TimeStateContext";
 import dayjs from "dayjs";
+import { useTenant } from "../../../hooks/useTenant";
 
 export const useFetchLogs = (server: string, query: string, limit: number) => {
-  const { period } = useTimeState();
+  const tenant = useTenant();
+
   const [logs, setLogs] = useState<Logs[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState<{ [key: number]: boolean }>({});
   const [error, setError] = useState<ErrorTypes | string>();
+  const abortControllerRef = useRef(new AbortController());
 
   const url = useMemo(() => getLogsUrl(server), [server]);
 
-  // include time range in query if not already present
-  const queryWithTime = useMemo(() => {
-    if (!/_time/.test(query)) {
-      const start = dayjs(period.start * 1000).tz().toISOString();
-      const end = dayjs(period.end * 1000).tz().toISOString();
-      const timerange = `_time:[${start}, ${end}]`;
-      return `${timerange} AND ${query}`;
-    }
-    return query;
-  }, [query, period]);
-
-  const options = useMemo(() => ({
+  const getOptions = (query: string, period: TimeParams, limit: number, signal: AbortSignal) => ({
+    signal,
     method: "POST",
     headers: {
-      "Accept": "application/stream+json",
+      ...tenant,
+      Accept: "application/stream+json",
     },
     body: new URLSearchParams({
-      query: queryWithTime.trim(),
-      limit: `${limit}`
+      query: query.trim(),
+      limit: `${limit}`,
+      start: dayjs(period.start * 1000).tz().toISOString(),
+      end: dayjs(period.end * 1000).tz().toISOString()
     })
-  }), [queryWithTime, limit]);
+  });
 
-  const parseLineToJSON = (line: string): Logs | null => {
-    try {
-      return JSON.parse(line);
-    } catch (e) {
-      return null;
-    }
-  };
+  const fetchLogs = useCallback(async (period: TimeParams) => {
+    abortControllerRef.current.abort();
+    abortControllerRef.current = new AbortController();
+    const { signal } = abortControllerRef.current;
 
-  const fetchLogs = useCallback(async () => {
-    const limit = Number(options.body.get("limit")) + 1;
-    setIsLoading(true);
+    const id = Date.now();
+    setIsLoading(prev => ({ ...prev, [id]: true }));
     setError(undefined);
+
     try {
+      const options = getOptions(query, period, limit, signal);
       const response = await fetch(url, options);
+      const text = await response.text();
 
       if (!response.ok || !response.body) {
-        const errorText = await response.text();
-        setError(errorText);
+        setError(text);
         setLogs([]);
-        setIsLoading(false);
-        return;
+        return false;
       }
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder("utf-8");
-      const result = [];
-
-      while (reader) {
-        const { done, value } = await reader.read();
-
-        if (done) {
-          // "Stream finished, no more data."
-          break;
-        }
-
-        const lines = decoder.decode(value, { stream: true }).split("\n");
-        result.push(...lines);
-
-        // Trim result to limit
-        // This will lose its meaning with these changes:
-        // https://github.com/VictoriaMetrics/VictoriaMetrics/pull/5778
-        if (result.length > limit) {
-          result.splice(0, result.length - limit);
-        }
-
-        if (result.length >= limit) {
-          // Reached the maximum line limit
-          reader.cancel();
-          break;
-        }
-      }
-      const data = result.map(parseLineToJSON).filter(line => line) as Logs[];
+      const data = text.split("\n", limit).map(parseLineToJSON).filter(line => line) as Logs[];
       setLogs(data);
+      return true;
     } catch (e) {
-      console.error(e);
-      setLogs([]);
-      if (e instanceof Error) {
-        setError(`${e.name}: ${e.message}`);
+      if (e instanceof Error && e.name !== "AbortError") {
+        setError(String(e));
+        console.error(e);
+        setLogs([]);
       }
+      return false;
+    } finally {
+      setIsLoading(prev => {
+        // Remove the `id` key from `isLoading` when its value becomes `false`
+        const { [id]: _, ...rest } = prev;
+        return rest;
+      });
     }
-    setIsLoading(false);
-  }, [url, options]);
+  }, [url, query, limit, tenant]);
+
+  useEffect(() => {
+    return () => {
+      abortControllerRef.current.abort();
+    };
+  }, []);
 
   return {
     logs,
-    isLoading,
+    isLoading: Object.values(isLoading).some(s => s),
     error,
     fetchLogs,
+    abortController: abortControllerRef.current
   };
 };
 
+const parseLineToJSON = (line: string): Logs | null => {
+  try {
+    return line && JSON.parse(line);
+  } catch (e) {
+    console.error(`Failed to parse "${line}" to JSON\n`, e);
+    return null;
+  }
+};

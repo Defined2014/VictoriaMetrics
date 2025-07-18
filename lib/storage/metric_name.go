@@ -5,16 +5,13 @@ import (
 	"fmt"
 	"runtime"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
-	"time"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/bytesutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/encoding"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/prompb"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/prompbmarshal"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/slicesutil"
 )
 
 const (
@@ -133,7 +130,7 @@ func unmarshalTagValue(dst, src []byte) ([]byte, []byte, error) {
 	}
 }
 
-// MetricName reperesents a metric name.
+// MetricName represents a metric name.
 type MetricName struct {
 	MetricGroup []byte
 
@@ -466,63 +463,15 @@ func (mn *MetricName) Unmarshal(src []byte) error {
 	return nil
 }
 
-// The maximum length of label name.
-//
-// Longer names are truncated.
-const maxLabelNameLen = 256
-
-// The maximum length of label value.
-//
-// Longer values are truncated.
-var maxLabelValueLen = 16 * 1024
-
-// SetMaxLabelValueLen sets the limit on the label value length.
-//
-// This function can be called before using the storage package.
-//
-// Label values with longer length are truncated.
-func SetMaxLabelValueLen(n int) {
-	if n > 0 {
-		maxLabelValueLen = n
-	}
-}
-
-// The maximum number of labels per each timeseries.
-var maxLabelsPerTimeseries = 30
-
-// SetMaxLabelsPerTimeseries sets the limit on the number of labels
-// per each time series.
-//
-// This function can be called before using the storage package.
-//
-// Superfluous labels are dropped.
-func SetMaxLabelsPerTimeseries(maxLabels int) {
-	if maxLabels > 0 {
-		maxLabelsPerTimeseries = maxLabels
-	}
-}
-
 // MarshalMetricNameRaw marshals labels to dst and returns the result.
 //
 // The result must be unmarshaled with MetricName.UnmarshalRaw
-func MarshalMetricNameRaw(dst []byte, labels []prompb.Label) []byte {
+func MarshalMetricNameRaw(dst []byte, labels []prompbmarshal.Label) []byte {
 	// Calculate the required space for dst.
 	dstLen := len(dst)
 	dstSize := dstLen
 	for i := range labels {
-		if i >= maxLabelsPerTimeseries {
-			trackDroppedLabels(labels, labels[i:])
-			break
-		}
 		label := &labels[i]
-		if len(label.Name) > maxLabelNameLen {
-			TooLongLabelNames.Add(1)
-			label.Name = label.Name[:maxLabelNameLen]
-		}
-		if len(label.Value) > maxLabelValueLen {
-			trackTruncatedLabels(labels, label)
-			label.Value = label.Value[:maxLabelValueLen]
-		}
 		if len(label.Value) == 0 {
 			// Skip labels without values, since they have no sense in prometheus.
 			continue
@@ -538,9 +487,6 @@ func MarshalMetricNameRaw(dst []byte, labels []prompb.Label) []byte {
 
 	// Marshal labels to dst.
 	for i := range labels {
-		if i >= maxLabelsPerTimeseries {
-			break
-		}
 		label := &labels[i]
 		if len(label.Value) == 0 {
 			// Skip labels without values, since they have no sense in prometheus.
@@ -550,69 +496,6 @@ func MarshalMetricNameRaw(dst []byte, labels []prompb.Label) []byte {
 		dst = marshalStringFast(dst, label.Value)
 	}
 	return dst
-}
-
-var (
-	// MetricsWithDroppedLabels is the number of metrics with at least a single dropped label
-	MetricsWithDroppedLabels atomic.Uint64
-
-	// TooLongLabelNames is the number of too long label names
-	TooLongLabelNames atomic.Uint64
-
-	// TooLongLabelValues is the number of too long label values
-	TooLongLabelValues atomic.Uint64
-)
-
-func trackDroppedLabels(labels, droppedLabels []prompb.Label) {
-	MetricsWithDroppedLabels.Add(1)
-	select {
-	case <-droppedLabelsLogTicker.C:
-		// Do not call logger.WithThrottler() here, since this will result in increased CPU usage
-		// because labelsToString() will be called with each trackDroppedLabels call.
-		logger.Warnf("dropping %d labels for %s; dropped labels: %s; either reduce the number of labels for this metric "+
-			"or increase -maxLabelsPerTimeseries=%d command-line flag value",
-			len(droppedLabels), labelsToString(labels), labelsToString(droppedLabels), maxLabelsPerTimeseries)
-	default:
-	}
-}
-
-func trackTruncatedLabels(labels []prompb.Label, truncated *prompb.Label) {
-	TooLongLabelValues.Add(1)
-	select {
-	case <-truncatedLabelsLogTicker.C:
-		// Do not call logger.WithThrottler() here, since this will result in increased CPU usage
-		// because labelsToString() will be called with each trackTruncatedLabels call.
-		logger.Warnf("truncate value for label %s because its length=%d exceeds -maxLabelValueLen=%d; "+
-			"original labels: %s; either reduce the label value length or increase -maxLabelValueLen command-line flag value",
-			truncated.Name, len(truncated.Value), maxLabelValueLen, labelsToString(labels))
-	default:
-	}
-}
-
-var droppedLabelsLogTicker = time.NewTicker(5 * time.Second)
-var truncatedLabelsLogTicker = time.NewTicker(5 * time.Second)
-
-func labelsToString(labels []prompb.Label) string {
-	labelsCopy := append([]prompb.Label{}, labels...)
-	sort.Slice(labelsCopy, func(i, j int) bool {
-		return string(labelsCopy[i].Name) < string(labelsCopy[j].Name)
-	})
-	var b []byte
-	b = append(b, '{')
-	for i, label := range labelsCopy {
-		if len(label.Name) == 0 {
-			b = append(b, "__name__"...)
-		} else {
-			b = append(b, label.Name...)
-		}
-		b = append(b, '=')
-		b = strconv.AppendQuote(b, string(label.Value))
-		if i < len(labels)-1 {
-			b = append(b, ',')
-		}
-	}
-	b = append(b, '}')
-	return string(b)
 }
 
 // marshalRaw marshals mn to dst and returns the result.
@@ -702,10 +585,8 @@ func (mn *MetricName) sortTags() {
 	}
 
 	cts := getCanonicalTags()
-	if n := len(mn.Tags) - cap(cts.tags); n > 0 {
-		cts.tags = append(cts.tags[:cap(cts.tags)], make([]canonicalTag, n)...)
-	}
-	dst := cts.tags[:len(mn.Tags)]
+	cts.tags = slicesutil.SetLength(cts.tags, len(mn.Tags))
+	dst := cts.tags
 	for i := range mn.Tags {
 		tag := &mn.Tags[i]
 		ct := &dst[i]
@@ -768,6 +649,7 @@ func (ts *canonicalTagsSort) Less(i, j int) bool {
 	x := *ts
 	return string(x[i].key) < string(x[j].key)
 }
+
 func (ts *canonicalTagsSort) Swap(i, j int) {
 	x := *ts
 	x[i], x[j] = x[j], x[i]
@@ -775,10 +657,7 @@ func (ts *canonicalTagsSort) Swap(i, j int) {
 
 func copyTags(dst, src []Tag) []Tag {
 	dstLen := len(dst)
-	if n := dstLen + len(src) - cap(dst); n > 0 {
-		dst = append(dst[:cap(dst)], make([]Tag, n)...)
-	}
-	dst = dst[:dstLen+len(src)]
+	dst = slicesutil.SetLength(dst, dstLen+len(src))
 	for i := range src {
 		dst[dstLen+i].copyFrom(&src[i])
 	}

@@ -23,13 +23,15 @@ export interface SeriesItem extends Series {
     median: number;
     forecast?: ForecastType | null;
     forecastGroup?: string;
+    hasAlias?: boolean;
 }
 
 export interface HideSeriesArgs {
     hideSeries: string[],
     legend: LegendItemType,
     metaKey: boolean,
-    series: Series[]
+    series: Series[],
+    isAnomalyView?: boolean,
 }
 
 export type MinMax = { min: number, max: number }
@@ -44,6 +46,7 @@ export interface LegendItemType {
     freeFormFields: {[key: string]: string};
     statsFormatted: SeriesItemStatsFormatted;
     median: number
+    hasAlias: boolean;
 }
 
 export interface BarSeriesItem {

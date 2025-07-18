@@ -15,24 +15,28 @@ import (
 
 	"github.com/golang/snappy"
 
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/cgroup"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/httputil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/netutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promauth"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/prompbmarshal"
 	"github.com/VictoriaMetrics/metrics"
 )
 
+var defaultConcurrency = cgroup.AvailableCPUs() * 2
+
 const (
-	defaultConcurrency   = 4
-	defaultMaxBatchSize  = 1e3
+	defaultMaxBatchSize  = 1e4
 	defaultMaxQueueSize  = 1e5
-	defaultFlushInterval = 5 * time.Second
+	defaultFlushInterval = 2 * time.Second
 	defaultWriteTimeout  = 30 * time.Second
 )
 
 var (
 	disablePathAppend = flag.Bool("remoteWrite.disablePathAppend", false, "Whether to disable automatic appending of '/api/v1/write' path to the configured -remoteWrite.url.")
 	sendTimeout       = flag.Duration("remoteWrite.sendTimeout", 30*time.Second, "Timeout for sending data to the configured -remoteWrite.url.")
-	retryMinInterval  = flag.Duration("remoteWrite.retryMinInterval", time.Second, "The minimum delay between retry attempts. Every next retry attempt will double the delay to prevent hammering of remote database. See also -remoteWrite.retryMaxInterval")
+	retryMinInterval  = flag.Duration("remoteWrite.retryMinInterval", time.Second, "The minimum delay between retry attempts. Every next retry attempt will double the delay to prevent hammering of remote database. See also -remoteWrite.retryMaxTime")
 	retryMaxTime      = flag.Duration("remoteWrite.retryMaxTime", time.Second*30, "The max time spent on retry attempts for the failed remote-write request. Change this value if it is expected for remoteWrite.url to be unreachable for more than -remoteWrite.retryMaxTime. See also -remoteWrite.retryMinInterval")
 )
 
@@ -91,7 +95,7 @@ func NewClient(ctx context.Context, cfg Config) (*Client, error) {
 		cfg.FlushInterval = defaultFlushInterval
 	}
 	if cfg.Transport == nil {
-		cfg.Transport = http.DefaultTransport.(*http.Transport).Clone()
+		cfg.Transport = httputil.NewTransport(false, "vmalert_remotewrite")
 	}
 	cc := defaultConcurrency
 	if cfg.Concurrency > 0 {
@@ -144,8 +148,13 @@ func (c *Client) Close() error {
 		return fmt.Errorf("client is already closed")
 	}
 	close(c.input)
+
+	start := time.Now()
+	logger.Infof("shutting down remote write client: flushing remained series")
 	close(c.doneCh)
 	c.wg.Wait()
+	logger.Infof("shutting down remote write client: finished in %v", time.Since(start))
+
 	return nil
 }
 
@@ -153,12 +162,17 @@ func (c *Client) run(ctx context.Context) {
 	ticker := time.NewTicker(c.flushInterval)
 	wr := &prompbmarshal.WriteRequest{}
 	shutdown := func() {
+		lastCtx, cancel := context.WithTimeout(context.Background(), defaultWriteTimeout)
+
 		for ts := range c.input {
 			wr.Timeseries = append(wr.Timeseries, ts)
+			if len(wr.Timeseries) >= c.maxBatchSize {
+				c.flush(lastCtx, wr)
+			}
 		}
-		lastCtx, cancel := context.WithTimeout(context.Background(), defaultWriteTimeout)
-		logger.Infof("shutting down remote write client and flushing remained %d series", len(wr.Timeseries))
+		// flush the last batch. `flush` will re-check and avoid flushing empty batch.
 		c.flush(lastCtx, wr)
+
 		cancel()
 	}
 	c.wg.Add(1)
@@ -203,6 +217,9 @@ var (
 	})
 )
 
+// GetDroppedRows returns value of droppedRows metric
+func GetDroppedRows() int { return int(droppedRows.Get()) }
+
 // flush is a blocking function that marshals WriteRequest and sends
 // it to remote-write endpoint. Flush performs limited amount of retries
 // if request fails.
@@ -227,7 +244,7 @@ func (c *Client) flush(ctx context.Context, wr *prompbmarshal.WriteRequest) {
 L:
 	for attempts := 0; ; attempts++ {
 		err := c.send(ctx, b)
-		if errors.Is(err, io.EOF) {
+		if err != nil && (errors.Is(err, io.EOF) || netutil.IsTrivialNetworkError(err)) {
 			// Something in the middle between client and destination might be closing
 			// the connection. So we do a one more attempt in hope request will succeed.
 			err = c.send(ctx, b)

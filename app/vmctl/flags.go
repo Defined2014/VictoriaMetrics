@@ -10,8 +10,9 @@ import (
 )
 
 const (
-	globalSilent  = "s"
-	globalVerbose = "verbose"
+	globalSilent             = "s"
+	globalVerbose            = "verbose"
+	globalDisableProgressBar = "disable-progress-bar"
 )
 
 var (
@@ -26,6 +27,11 @@ var (
 			Value: false,
 			Usage: "Whether to enable verbosity in logs output.",
 		},
+		&cli.BoolFlag{
+			Name:  globalDisableProgressBar,
+			Value: false,
+			Usage: "Whether to disable progress bar during the import.",
+		},
 	}
 )
 
@@ -39,13 +45,21 @@ const (
 	vmBatchSize          = "vm-batch-size"
 	vmSignificantFigures = "vm-significant-figures"
 	vmRoundDigits        = "vm-round-digits"
-	vmDisableProgressBar = "vm-disable-progress-bar"
+	vmCertFile           = "vm-cert-file"
+	vmKeyFile            = "vm-key-file"
+	vmCAFile             = "vm-CA-file"
+	vmServerName         = "vm-server-name"
+	vmInsecureSkipVerify = "vm-insecure-skip-verify"
 
 	// also used in vm-native
 	vmExtraLabel = "vm-extra-label"
 	vmRateLimit  = "vm-rate-limit"
 
 	vmInterCluster = "vm-intercluster"
+
+	vmBackoffRetries     = "vm-backoff-retries"
+	vmBackoffFactor      = "vm-backoff-factor"
+	vmBackoffMinDuration = "vm-backoff-min-duration"
 )
 
 var (
@@ -56,7 +70,7 @@ var (
 			Usage: "VictoriaMetrics address to perform import requests. \n" +
 				"Should be the same as --httpListenAddr value for single-node version or vminsert component. \n" +
 				"When importing into the clustered version do not forget to set additionally --vm-account-id flag. \n" +
-				"Please note, that `vmctl` performs initial readiness check for the given address by checking `/health` endpoint.",
+				"Please note, that vmctl performs initial readiness check for the given address by checking /health endpoint.",
 		},
 		&cli.StringFlag{
 			Name:    vmUser,
@@ -115,9 +129,41 @@ var (
 			Usage: "Optional data transfer rate limit in bytes per second.\n" +
 				"By default, the rate limit is disabled. It can be useful for limiting load on configured via '--vmAddr' destination.",
 		},
+		&cli.StringFlag{
+			Name:  vmCertFile,
+			Usage: "Optional path to client-side TLS certificate file to use when connecting to '--vmAddr'",
+		},
+		&cli.StringFlag{
+			Name:  vmKeyFile,
+			Usage: "Optional path to client-side TLS key to use when connecting to '--vmAddr'",
+		},
+		&cli.StringFlag{
+			Name:  vmCAFile,
+			Usage: "Optional path to TLS CA file to use for verifying connections to '--vmAddr'. By default, system CA is used",
+		},
+		&cli.StringFlag{
+			Name:  vmServerName,
+			Usage: "Optional TLS server name to use for connections to '--vmAddr'. By default, the server name from '--vmAddr' is used",
+		},
 		&cli.BoolFlag{
-			Name:  vmDisableProgressBar,
-			Usage: "Whether to disable progress bar per each worker during the import.",
+			Name:  vmInsecureSkipVerify,
+			Usage: "Whether to skip tls verification when connecting to '--vmAddr'",
+			Value: false,
+		},
+		&cli.IntFlag{
+			Name:  vmBackoffRetries,
+			Value: 10,
+			Usage: "How many import retries to perform before giving up.",
+		},
+		&cli.Float64Flag{
+			Name:  vmBackoffFactor,
+			Value: 1.8,
+			Usage: "Factor to multiply the base duration after each failed import retry. Must be greater than 1.0",
+		},
+		&cli.DurationFlag{
+			Name:  vmBackoffMinDuration,
+			Value: time.Second * 2,
+			Usage: "Minimum duration to wait before the first import retry. Each subsequent import retry will be multiplied by the '--vm-backoff-factor'.",
 		},
 	}
 )
@@ -210,7 +256,7 @@ var (
 		},
 		&cli.StringFlag{
 			Name:  otsdbServerName,
-			Usage: "Optional TLS server name to use for connections to -otsdb-addr. By default, the server name from otsdbAddr is used",
+			Usage: "Optional TLS server name to use for connections to -otsdb-addr. By default, the server name from -otsdb-addr is used",
 		},
 		&cli.BoolFlag{
 			Name:  otsdbInsecureSkipVerify,
@@ -298,7 +344,7 @@ var (
 		},
 		&cli.BoolFlag{
 			Name:  influxSkipDatabaseLabel,
-			Usage: "Wether to skip adding the label 'db' to timeseries.",
+			Usage: "Whether to skip adding the label 'db' to timeseries.",
 			Value: false,
 		},
 		&cli.BoolFlag{
@@ -387,6 +433,10 @@ const (
 	vmNativeSrcPassword           = "vm-native-src-password"
 	vmNativeSrcHeaders            = "vm-native-src-headers"
 	vmNativeSrcBearerToken        = "vm-native-src-bearer-token"
+	vmNativeSrcCertFile           = "vm-native-src-cert-file"
+	vmNativeSrcKeyFile            = "vm-native-src-key-file"
+	vmNativeSrcCAFile             = "vm-native-src-ca-file"
+	vmNativeSrcServerName         = "vm-native-src-server-name"
 	vmNativeSrcInsecureSkipVerify = "vm-native-src-insecure-skip-verify"
 
 	vmNativeDstAddr               = "vm-native-dst-addr"
@@ -394,7 +444,15 @@ const (
 	vmNativeDstPassword           = "vm-native-dst-password"
 	vmNativeDstHeaders            = "vm-native-dst-headers"
 	vmNativeDstBearerToken        = "vm-native-dst-bearer-token"
+	vmNativeDstCertFile           = "vm-native-dst-cert-file"
+	vmNativeDstKeyFile            = "vm-native-dst-key-file"
+	vmNativeDstCAFile             = "vm-native-dst-ca-file"
+	vmNativeDstServerName         = "vm-native-dst-server-name"
 	vmNativeDstInsecureSkipVerify = "vm-native-dst-insecure-skip-verify"
+
+	vmNativeBackoffRetries     = "vm-native-backoff-retries"
+	vmNativeBackoffFactor      = "vm-native-backoff-factor"
+	vmNativeBackoffMinDuration = "vm-native-backoff-min-duration"
 )
 
 var (
@@ -408,12 +466,12 @@ var (
 		},
 		&cli.StringFlag{
 			Name:     vmNativeFilterTimeStart,
-			Usage:    "The time filter may contain different timestamp formats. See more details here https://docs.victoriametrics.com/Single-server-VictoriaMetrics.html#timestamp-formats",
+			Usage:    "The time filter may contain different timestamp formats. See more details here https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/#timestamp-formats",
 			Required: true,
 		},
 		&cli.StringFlag{
 			Name:  vmNativeFilterTimeEnd,
-			Usage: "The time filter may contain different timestamp formats. See more details here https://docs.victoriametrics.com/Single-server-VictoriaMetrics.html#timestamp-formats",
+			Usage: "The time filter may contain different timestamp formats. See more details here https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/#timestamp-formats",
 		},
 		&cli.StringFlag{
 			Name: vmNativeStepInterval,
@@ -435,7 +493,7 @@ var (
 			Name: vmNativeSrcAddr,
 			Usage: "VictoriaMetrics address to perform export from. \n" +
 				" Should be the same as --httpListenAddr value for single-node version or vmselect component." +
-				" If exporting from cluster version see https://docs.victoriametrics.com/Cluster-VictoriaMetrics.html#url-format",
+				" If exporting from cluster version see https://docs.victoriametrics.com/victoriametrics/cluster-victoriametrics/#url-format",
 			Required: true,
 		},
 		&cli.StringFlag{
@@ -456,13 +514,35 @@ var (
 		},
 		&cli.StringFlag{
 			Name:  vmNativeSrcBearerToken,
-			Usage: "Optional bearer auth token to use for the corresponding `--vm-native-src-addr`",
+			Usage: "Optional bearer auth token to use for the corresponding --vm-native-src-addr",
 		},
+		&cli.StringFlag{
+			Name:  vmNativeSrcCertFile,
+			Usage: "Optional path to client-side TLS certificate file to use when connecting to --vm-native-src-addr",
+		},
+		&cli.StringFlag{
+			Name:  vmNativeSrcKeyFile,
+			Usage: "Optional path to client-side TLS key to use when connecting to --vm-native-src-addr",
+		},
+		&cli.StringFlag{
+			Name:  vmNativeSrcCAFile,
+			Usage: "Optional path to TLS CA file to use for verifying connections to --vm-native-src-addr. By default, system CA is used",
+		},
+		&cli.StringFlag{
+			Name:  vmNativeSrcServerName,
+			Usage: "Optional TLS server name to use for connections to --vm-native-src-addr. By default, the server name from --vm-native-src-addr is used",
+		},
+		&cli.BoolFlag{
+			Name:  vmNativeSrcInsecureSkipVerify,
+			Usage: "Whether to skip TLS certificate verification when connecting to --vm-native-src-addr",
+			Value: false,
+		},
+
 		&cli.StringFlag{
 			Name: vmNativeDstAddr,
 			Usage: "VictoriaMetrics address to perform import to. \n" +
 				" Should be the same as --httpListenAddr value for single-node version or vminsert component." +
-				" If importing into cluster version see https://docs.victoriametrics.com/Cluster-VictoriaMetrics.html#url-format",
+				" If importing into cluster version see https://docs.victoriametrics.com/victoriametrics/cluster-victoriametrics/#url-format",
 			Required: true,
 		},
 		&cli.StringFlag{
@@ -483,8 +563,30 @@ var (
 		},
 		&cli.StringFlag{
 			Name:  vmNativeDstBearerToken,
-			Usage: "Optional bearer auth token to use for the corresponding `--vm-native-dst-addr`",
+			Usage: "Optional bearer auth token to use for the corresponding --vm-native-dst-addr",
 		},
+		&cli.StringFlag{
+			Name:  vmNativeDstCertFile,
+			Usage: "Optional path to client-side TLS certificate file to use when connecting to --vm-native-dst-addr",
+		},
+		&cli.StringFlag{
+			Name:  vmNativeDstKeyFile,
+			Usage: "Optional path to client-side TLS key to use when connecting to --vm-native-dst-addr",
+		},
+		&cli.StringFlag{
+			Name:  vmNativeDstCAFile,
+			Usage: "Optional path to TLS CA file to use for verifying connections to --vm-native-dst-addr. By default, system CA is used",
+		},
+		&cli.StringFlag{
+			Name:  vmNativeDstServerName,
+			Usage: "Optional TLS server name to use for connections to --vm-native-dst-addr. By default, the server name from --vm-native-dst-addr is used",
+		},
+		&cli.BoolFlag{
+			Name:  vmNativeDstInsecureSkipVerify,
+			Usage: "Whether to skip TLS certificate verification when connecting to --vm-native-dst-addr",
+			Value: false,
+		},
+
 		&cli.StringSliceFlag{
 			Name:  vmExtraLabel,
 			Value: nil,
@@ -494,7 +596,8 @@ var (
 		&cli.Int64Flag{
 			Name: vmRateLimit,
 			Usage: "Optional data transfer rate limit in bytes per second.\n" +
-				"By default, the rate limit is disabled. It can be useful for limiting load on source or destination databases.",
+				"By default, the rate limit is disabled. It can be useful for limiting load on source or destination databases. \n" +
+				"Rate limit is applied per worker, see --vm-concurrency.",
 		},
 		&cli.BoolFlag{
 			Name: vmInterCluster,
@@ -514,21 +617,26 @@ var (
 		},
 		&cli.BoolFlag{
 			Name: vmNativeDisableBinaryProtocol,
-			Usage: "Whether to use https://docs.victoriametrics.com/#how-to-export-data-in-json-line-format" +
-				"instead of https://docs.victoriametrics.com/#how-to-export-data-in-native-format API." +
+			Usage: "Whether to use https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/#how-to-export-data-in-json-line-format " +
+				"instead of https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/#how-to-export-data-in-native-format API." +
 				"Binary export/import API protocol implies less network and resource usage, as it transfers compressed binary data blocks." +
 				"Non-binary export/import API is less efficient, but supports deduplication if it is configured on vm-native-src-addr side.",
 			Value: false,
 		},
-		&cli.BoolFlag{
-			Name:  vmNativeSrcInsecureSkipVerify,
-			Usage: "Whether to skip TLS certificate verification when connecting to the source address",
-			Value: false,
+		&cli.IntFlag{
+			Name:  vmNativeBackoffRetries,
+			Value: 10,
+			Usage: "How many export/import retries to perform before giving up.",
 		},
-		&cli.BoolFlag{
-			Name:  vmNativeDstInsecureSkipVerify,
-			Usage: "Whether to skip TLS certificate verification when connecting to the destination address",
-			Value: false,
+		&cli.Float64Flag{
+			Name:  vmNativeBackoffFactor,
+			Value: 1.8,
+			Usage: "Factor to multiply the base duration after each failed export/import retry. Must be greater than 1.0",
+		},
+		&cli.DurationFlag{
+			Name:  vmNativeBackoffMinDuration,
+			Value: time.Second * 2,
+			Usage: "Minimum duration to wait before the first export/import retry. Each subsequent export/import retry will be multiplied by the '--vm-native-backoff-factor'.",
 		},
 	}
 )

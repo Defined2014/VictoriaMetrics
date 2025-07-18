@@ -7,7 +7,6 @@ import (
 	"sync"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/bytesutil"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/cgroup"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/encoding/zstd"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/fasttime"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/flagutil"
@@ -45,6 +44,10 @@ func Parse(r io.Reader, isVMRemoteWrite bool, callback func(tss []prompb.TimeSer
 			// Fall back to Snappy decompression, since vmagent may send snappy-encoded messages
 			// with 'Content-Encoding: zstd' header if they were put into persistent queue before vmagent restart.
 			// See https://github.com/VictoriaMetrics/VictoriaMetrics/issues/5301
+			//
+			// Newer vmagent sends proper 'Content-Encoding' header.
+			// The logic is preserved for backwards compatibility.
+			// See https://github.com/VictoriaMetrics/VictoriaMetrics/pull/8650
 			zstdErr := err
 			bb.B, err = snappy.Decode(bb.B[:cap(bb.B)], ctx.reqBuf.B)
 			if err != nil {
@@ -57,6 +60,10 @@ func Parse(r io.Reader, isVMRemoteWrite bool, callback func(tss []prompb.TimeSer
 			// Fall back to zstd decompression, since vmagent may send zstd-encoded messages
 			// without 'Content-Encoding: zstd' header if they were put into persistent queue before vmagent restart.
 			// See https://github.com/VictoriaMetrics/VictoriaMetrics/issues/5301#issuecomment-1815871992
+			//
+			// Newer vmagent sends proper 'Content-Encoding' header.
+			// The logic is preserved for backwards compatibility.
+			// See https://github.com/VictoriaMetrics/VictoriaMetrics/pull/8650
 			snappyErr := err
 			bb.B, err = zstd.Decompress(bb.B[:0], ctx.reqBuf.B)
 			if err != nil {
@@ -123,35 +130,22 @@ var (
 )
 
 func getPushCtx(r io.Reader) *pushCtx {
-	select {
-	case ctx := <-pushCtxPoolCh:
+	if v := pushCtxPool.Get(); v != nil {
+		ctx := v.(*pushCtx)
 		ctx.br.Reset(r)
 		return ctx
-	default:
-		if v := pushCtxPool.Get(); v != nil {
-			ctx := v.(*pushCtx)
-			ctx.br.Reset(r)
-			return ctx
-		}
-		return &pushCtx{
-			br: bufio.NewReaderSize(r, 64*1024),
-		}
+	}
+	return &pushCtx{
+		br: bufio.NewReaderSize(r, 64*1024),
 	}
 }
 
 func putPushCtx(ctx *pushCtx) {
 	ctx.reset()
-	select {
-	case pushCtxPoolCh <- ctx:
-	default:
-		pushCtxPool.Put(ctx)
-	}
+	pushCtxPool.Put(ctx)
 }
 
-var (
-	pushCtxPool   sync.Pool
-	pushCtxPoolCh = make(chan *pushCtx, cgroup.AvailableCPUs())
-)
+var pushCtxPool sync.Pool
 
 func getWriteRequest() *prompb.WriteRequest {
 	v := writeRequestPool.Get()

@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/pprof"
+	"net/url"
 	"os"
 	"runtime"
 	"strconv"
@@ -20,23 +21,26 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/VictoriaMetrics/metrics"
+	"github.com/klauspost/compress/gzhttp"
+	"github.com/valyala/fastrand"
+
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/appmetrics"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/fasttime"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/flagutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/netutil"
-	"github.com/VictoriaMetrics/metrics"
-	"github.com/klauspost/compress/gzhttp"
-	"github.com/valyala/fastrand"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/stringsutil"
 )
 
 var (
 	tlsEnable = flagutil.NewArrayBool("tls", "Whether to enable TLS for incoming HTTP requests at the given -httpListenAddr (aka https). -tlsCertFile and -tlsKeyFile must be set if -tls is set. "+
 		"See also -mtls")
 	tlsCertFile = flagutil.NewArrayString("tlsCertFile", "Path to file with TLS certificate for the corresponding -httpListenAddr if -tls is set. "+
-		"Prefer ECDSA certs instead of RSA certs as RSA certs are slower. The provided certificate file is automatically re-read every second, so it can be dynamically updated")
+		"Prefer ECDSA certs instead of RSA certs as RSA certs are slower. The provided certificate file is automatically re-read every second, so it can be dynamically updated. "+
+		"See also -tlsAutocertHosts")
 	tlsKeyFile = flagutil.NewArrayString("tlsKeyFile", "Path to file with TLS key for the corresponding -httpListenAddr if -tls is set. "+
-		"The provided key file is automatically re-read every second, so it can be dynamically updated")
+		"The provided key file is automatically re-read every second, so it can be dynamically updated. See also -tlsAutocertHosts")
 	tlsCipherSuites = flagutil.NewArrayString("tlsCipherSuites", "Optional list of TLS cipher suites for incoming requests over HTTPS if -tls is set. See the list of supported cipher suites at https://pkg.go.dev/crypto/tls#pkg-constants")
 	tlsMinVersion   = flagutil.NewArrayString("tlsMinVersion", "Optional minimum TLS version to use for the corresponding -httpListenAddr if -tls is set. "+
 		"Supported values: TLS10, TLS11, TLS12, TLS13")
@@ -46,10 +50,11 @@ var (
 		"See https://www.robustperception.io/using-external-urls-and-proxies-with-prometheus")
 	httpAuthUsername = flag.String("httpAuth.username", "", "Username for HTTP server's Basic Auth. The authentication is disabled if empty. See also -httpAuth.password")
 	httpAuthPassword = flagutil.NewPassword("httpAuth.password", "Password for HTTP server's Basic Auth. The authentication is disabled if -httpAuth.username is empty")
-	metricsAuthKey   = flagutil.NewPassword("metricsAuthKey", "Auth key for /metrics endpoint. It must be passed via authKey query arg. It overrides httpAuth.* settings")
-	flagsAuthKey     = flagutil.NewPassword("flagsAuthKey", "Auth key for /flags endpoint. It must be passed via authKey query arg. It overrides httpAuth.* settings")
-	pprofAuthKey     = flagutil.NewPassword("pprofAuthKey", "Auth key for /debug/pprof/* endpoints. It must be passed via authKey query arg. It overrides httpAuth.* settings")
+	metricsAuthKey   = flagutil.NewPassword("metricsAuthKey", "Auth key for /metrics endpoint. It must be passed via authKey query arg. It overrides -httpAuth.*")
+	flagsAuthKey     = flagutil.NewPassword("flagsAuthKey", "Auth key for /flags endpoint. It must be passed via authKey query arg. It overrides -httpAuth.*")
+	pprofAuthKey     = flagutil.NewPassword("pprofAuthKey", "Auth key for /debug/pprof/* endpoints. It must be passed via authKey query arg. It overrides -httpAuth.*")
 
+	disableKeepAlive            = flag.Bool("http.disableKeepAlive", false, "Whether to disable HTTP keep-alive for incoming connections at -httpListenAddr")
 	disableResponseCompression  = flag.Bool("http.disableResponseCompression", false, "Disable compression of HTTP responses to save CPU resources. By default, compression is enabled to save network bandwidth")
 	maxGracefulShutdownDuration = flag.Duration("http.maxGracefulShutdownDuration", 7*time.Second, `The maximum duration for a graceful shutdown of the HTTP server. A highly loaded server may require increased value for a graceful shutdown`)
 	shutdownDelay               = flag.Duration("http.shutdownDelay", 0, `Optional delay before http server shutdown. During this delay, the server returns non-OK responses from /health page, so load balancers can route new requests to other servers`)
@@ -60,6 +65,8 @@ var (
 	headerHSTS         = flag.String("http.header.hsts", "", "Value for 'Strict-Transport-Security' header, recommended: 'max-age=31536000; includeSubDomains'")
 	headerFrameOptions = flag.String("http.header.frameOptions", "", "Value for 'X-Frame-Options' header")
 	headerCSP          = flag.String("http.header.csp", "", `Value for 'Content-Security-Policy' header, recommended: "default-src 'self'"`)
+
+	disableCORS = flag.Bool("http.disableCORS", false, `Disable CORS for all origins (*)`)
 )
 
 var (
@@ -80,17 +87,25 @@ type server struct {
 // In such cases the caller must serve the request.
 type RequestHandler func(w http.ResponseWriter, r *http.Request) bool
 
+// ServeOptions defiens optional parameters for http server
+type ServeOptions struct {
+	// UseProxyProtocol if is set to true for the corresponding addr, then the incoming connections are accepted via proxy protocol.
+	// See https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt
+	UseProxyProtocol *flagutil.ArrayBool
+	// DisableBuiltinRoutes whether not to serve built-in routes for the given server, such as:
+	// /health, /debug/pprof and few others
+	// In addition basic auth check and authKey checks will be disabled for the given addr
+	//
+	// Mostly required by http proxy servers, which performs own authorization and requests routing
+	DisableBuiltinRoutes bool
+}
+
 // Serve starts an http server on the given addrs with the given optional rh.
 //
 // By default all the responses are transparently compressed, since egress traffic is usually expensive.
-//
-// The compression can be disabled by specifying -http.disableResponseCompression command-line flag.
-//
-// If useProxyProtocol is set to true for the corresponding addr, then the incoming connections are accepted via proxy protocol.
-// See https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt
-func Serve(addrs []string, useProxyProtocol *flagutil.ArrayBool, rh RequestHandler) {
+func Serve(addrs []string, rh RequestHandler, opts ServeOptions) {
 	if rh == nil {
-		rh = func(w http.ResponseWriter, r *http.Request) bool {
+		rh = func(_ http.ResponseWriter, _ *http.Request) bool {
 			return false
 		}
 	}
@@ -98,25 +113,20 @@ func Serve(addrs []string, useProxyProtocol *flagutil.ArrayBool, rh RequestHandl
 		if addr == "" {
 			continue
 		}
-		useProxyProto := false
-		if useProxyProtocol != nil {
-			useProxyProto = useProxyProtocol.GetOptionalArg(idx)
-		}
-		go serve(addr, useProxyProto, rh, idx)
+		go serve(addr, rh, idx, opts)
 	}
 }
 
-func serve(addr string, useProxyProtocol bool, rh RequestHandler, idx int) {
+func serve(addr string, rh RequestHandler, idx int, opts ServeOptions) {
 	scheme := "http"
 	if tlsEnable.GetOptionalArg(idx) {
 		scheme = "https"
 	}
-	hostAddr := addr
-	if strings.HasPrefix(hostAddr, ":") {
-		hostAddr = "127.0.0.1" + hostAddr
+	useProxyProto := false
+	if opts.UseProxyProtocol != nil {
+		useProxyProto = opts.UseProxyProtocol.GetOptionalArg(idx)
 	}
-	logger.Infof("starting server at %s://%s/", scheme, hostAddr)
-	logger.Infof("pprof handlers are exposed at %s://%s/debug/pprof/", scheme, hostAddr)
+
 	var tlsConfig *tls.Config
 	if tlsEnable.GetOptionalArg(idx) {
 		certFile := tlsCertFile.GetOptionalArg(idx)
@@ -128,17 +138,22 @@ func serve(addr string, useProxyProtocol bool, rh RequestHandler, idx int) {
 		}
 		tlsConfig = tc
 	}
-	ln, err := netutil.NewTCPListener(scheme, addr, useProxyProtocol, tlsConfig)
+	ln, err := netutil.NewTCPListener(scheme, addr, useProxyProto, tlsConfig)
 	if err != nil {
 		logger.Fatalf("cannot start http server at %s: %s", addr, err)
 	}
-	serveWithListener(addr, ln, rh)
+	logger.Infof("started server at %s://%s/", scheme, ln.Addr())
+	if !opts.DisableBuiltinRoutes {
+		logger.Infof("pprof handlers are exposed at %s://%s/debug/pprof/", scheme, ln.Addr())
+	}
+
+	serveWithListener(addr, ln, rh, opts.DisableBuiltinRoutes)
 }
 
-func serveWithListener(addr string, ln net.Listener, rh RequestHandler) {
+func serveWithListener(addr string, ln net.Listener, rh RequestHandler, disableBuiltinRoutes bool) {
 	var s server
+
 	s.s = &http.Server{
-		Handler: gzipHandler(&s, rh),
 
 		// Disable http/2, since it doesn't give any advantages for VictoriaMetrics services.
 		TLSNextProto: make(map[string]func(*http.Server, *tls.Conn, http.Handler)),
@@ -151,8 +166,9 @@ func serveWithListener(addr string, ln net.Listener, rh RequestHandler) {
 
 		ErrorLog: logger.StdErrorLogger(),
 	}
+	s.s.SetKeepAlivesEnabled(!*disableKeepAlive)
 	if *connTimeout > 0 {
-		s.s.ConnContext = func(ctx context.Context, c net.Conn) context.Context {
+		s.s.ConnContext = func(ctx context.Context, _ net.Conn) context.Context {
 			timeoutSec := connTimeout.Seconds()
 			// Add a jitter for connection timeout in order to prevent Thundering herd problem
 			// when all the connections are established at the same time.
@@ -162,6 +178,19 @@ func serveWithListener(addr string, ln net.Listener, rh RequestHandler) {
 			return context.WithValue(ctx, connDeadlineTimeKey, &deadline)
 		}
 	}
+	rhw := rh
+	if !disableBuiltinRoutes {
+		rhw = func(w http.ResponseWriter, r *http.Request) bool {
+			return builtinRoutesHandler(&s, r, w, rh)
+		}
+	}
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerWrapper(w, r, rhw)
+	})
+	if !*disableResponseCompression {
+		h = gzipHandlerWrapper(h)
+	}
+	s.s.Handler = h
 
 	serversLock.Lock()
 	servers[addr] = &s
@@ -185,7 +214,7 @@ func whetherToCloseConn(r *http.Request) bool {
 	return ok && fasttime.UnixTimestamp() > *deadline
 }
 
-var connDeadlineTimeKey = interface{}("connDeadlineSecs")
+var connDeadlineTimeKey = any("connDeadlineSecs")
 
 // Stop stops the http server on the given addrs, which has been started via Serve func.
 func Stop(addrs []string) error {
@@ -244,16 +273,6 @@ func stop(addr string) error {
 	return nil
 }
 
-func gzipHandler(s *server, rh RequestHandler) http.HandlerFunc {
-	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handlerWrapper(s, w, r, rh)
-	})
-	if *disableResponseCompression {
-		return h
-	}
-	return gzipHandlerWrapper(h)
-}
-
 var gzipHandlerWrapper = func() func(http.Handler) http.HandlerFunc {
 	hw, err := gzhttp.NewWrapper(gzhttp.CompressionLevel(1))
 	if err != nil {
@@ -278,7 +297,7 @@ var hostname = func() string {
 	return h
 }()
 
-func handlerWrapper(s *server, w http.ResponseWriter, r *http.Request, rh RequestHandler) {
+func handlerWrapper(w http.ResponseWriter, r *http.Request, rh RequestHandler) {
 	// All the VictoriaMetrics code assumes that panic stops the process.
 	// Unfortunately, the standard net/http.Server recovers from panics in request handlers,
 	// so VictoriaMetrics state can become inconsistent after the recovered panic.
@@ -310,12 +329,7 @@ func handlerWrapper(s *server, w http.ResponseWriter, r *http.Request, rh Reques
 		h.Set("Connection", "close")
 	}
 	path := r.URL.Path
-	if strings.HasSuffix(path, "/favicon.ico") {
-		w.Header().Set("Cache-Control", "max-age=3600")
-		faviconRequests.Inc()
-		w.Write(faviconData)
-		return
-	}
+
 	prefix := GetPathPrefix()
 	if prefix != "" {
 		// Trim -http.pathPrefix from path
@@ -336,13 +350,37 @@ func handlerWrapper(s *server, w http.ResponseWriter, r *http.Request, rh Reques
 		path = path[len(prefix)-1:]
 		r.URL.Path = path
 	}
+
+	w = &responseWriterWithAbort{
+		ResponseWriter: w,
+	}
+	if rh(w, r) {
+		return
+	}
+
+	Errorf(w, r, "unsupported path requested: %q", r.URL.Path)
+	unsupportedRequestErrors.Inc()
+}
+
+func builtinRoutesHandler(s *server, r *http.Request, w http.ResponseWriter, rh RequestHandler) bool {
+
+	h := w.Header()
+
+	path := r.URL.Path
+	if strings.HasSuffix(path, "/favicon.ico") {
+		w.Header().Set("Cache-Control", "max-age=3600")
+		faviconRequests.Inc()
+		w.Write(faviconData)
+		return true
+	}
+
 	switch r.URL.Path {
 	case "/health":
 		h.Set("Content-Type", "text/plain; charset=utf-8")
 		deadline := s.shutdownDelayDeadline.Load()
 		if deadline <= 0 {
 			w.Write([]byte("OK"))
-			return
+			return true
 		}
 		// Return non-OK response during grace period before shutting down the server.
 		// Load balancers must notify these responses and re-route new requests to other servers.
@@ -353,7 +391,7 @@ func handlerWrapper(s *server, w http.ResponseWriter, r *http.Request, rh Reques
 		}
 		errMsg := fmt.Sprintf("The server is in delayed shutdown mode, which will end in %.3fs", d.Seconds())
 		http.Error(w, errMsg, http.StatusServiceUnavailable)
-		return
+		return true
 	case "/ping":
 		// This is needed for compatibility with InfluxDB agents.
 		// See https://docs.influxdata.com/influxdb/v1.7/tools/api/#ping-http-endpoint
@@ -362,76 +400,81 @@ func handlerWrapper(s *server, w http.ResponseWriter, r *http.Request, rh Reques
 			status = http.StatusOK
 		}
 		w.WriteHeader(status)
-		return
+		return true
 	case "/metrics":
 		metricsRequests.Inc()
-		if !CheckAuthFlag(w, r, metricsAuthKey.Get(), "metricsAuthKey") {
-			return
+		if !CheckAuthFlag(w, r, metricsAuthKey) {
+			return true
 		}
 		startTime := time.Now()
 		h.Set("Content-Type", "text/plain; charset=utf-8")
 		appmetrics.WritePrometheusMetrics(w)
 		metricsHandlerDuration.UpdateDuration(startTime)
-		return
+		return true
 	case "/flags":
-		if !CheckAuthFlag(w, r, flagsAuthKey.Get(), "flagsAuthKey") {
-			return
+		if !CheckAuthFlag(w, r, flagsAuthKey) {
+			return true
 		}
 		h.Set("Content-Type", "text/plain; charset=utf-8")
 		flagutil.WriteFlags(w)
-		return
+		return true
 	case "/-/healthy":
 		// This is needed for Prometheus compatibility
 		// See https://github.com/VictoriaMetrics/VictoriaMetrics/issues/1833
 		fmt.Fprintf(w, "VictoriaMetrics is Healthy.\n")
-		return
+		return true
 	case "/-/ready":
 		// This is needed for Prometheus compatibility
 		// See https://github.com/VictoriaMetrics/VictoriaMetrics/issues/1833
 		fmt.Fprintf(w, "VictoriaMetrics is Ready.\n")
-		return
+		return true
 	case "/robots.txt":
 		// This prevents search engines from indexing contents
 		// See https://github.com/VictoriaMetrics/VictoriaMetrics/issues/4128
 		fmt.Fprintf(w, "User-agent: *\nDisallow: /\n")
-		return
+		return true
 	default:
 		if strings.HasPrefix(r.URL.Path, "/debug/pprof/") {
 			pprofRequests.Inc()
-			if !CheckAuthFlag(w, r, pprofAuthKey.Get(), "pprofAuthKey") {
-				return
+			if !CheckAuthFlag(w, r, pprofAuthKey) {
+				return true
 			}
 			pprofHandler(r.URL.Path[len("/debug/pprof/"):], w, r)
-			return
+			return true
 		}
 
-		if !CheckBasicAuth(w, r) {
-			return
+		if !isProtectedByAuthFlag(r.URL.Path) && !CheckBasicAuth(w, r) {
+			return true
 		}
-
-		w = &responseWriterWithAbort{
-			ResponseWriter: w,
-		}
-		if rh(w, r) {
-			return
-		}
-
-		Errorf(w, r, "unsupported path requested: %q", r.URL.Path)
-		unsupportedRequestErrors.Inc()
-		return
 	}
+	return rh(w, r)
+}
+
+func isProtectedByAuthFlag(path string) bool {
+	// These paths must explicitly call CheckAuthFlag().
+	// See https://github.com/VictoriaMetrics/VictoriaMetrics/issues/6329
+	return strings.HasSuffix(path, "/config") || strings.HasSuffix(path, "/reload") ||
+		strings.HasSuffix(path, "/resetRollupResultCache") || strings.HasSuffix(path, "/delSeries") || strings.HasSuffix(path, "/delete_series") ||
+		strings.HasSuffix(path, "/force_merge") || strings.HasSuffix(path, "/force_flush") || strings.HasSuffix(path, "/snapshot") ||
+		strings.HasPrefix(path, "/snapshot/") || strings.HasSuffix(path, "/admin/status/metric_names_stats/reset")
 }
 
 // CheckAuthFlag checks whether the given authKey is set and valid
 //
 // Falls back to checkBasicAuth if authKey is not set
-func CheckAuthFlag(w http.ResponseWriter, r *http.Request, flagValue string, flagName string) bool {
-	if flagValue == "" {
+func CheckAuthFlag(w http.ResponseWriter, r *http.Request, expectedKey *flagutil.Password) bool {
+	expectedValue := expectedKey.Get()
+	if expectedValue == "" {
 		return CheckBasicAuth(w, r)
 	}
-	if r.FormValue("authKey") != flagValue {
+	if len(r.FormValue("authKey")) == 0 {
 		authKeyRequestErrors.Inc()
-		http.Error(w, fmt.Sprintf("The provided authKey doesn't match -%s", flagName), http.StatusUnauthorized)
+		http.Error(w, fmt.Sprintf("Expected to receive non-empty authKey when -%s is set", expectedKey.Name()), http.StatusUnauthorized)
+		return false
+	}
+	if r.FormValue("authKey") != expectedValue {
+		authKeyRequestErrors.Inc()
+		http.Error(w, fmt.Sprintf("The provided authKey doesn't match -%s", expectedKey.Name()), http.StatusUnauthorized)
 		return false
 	}
 	return true
@@ -460,6 +503,10 @@ func CheckBasicAuth(w http.ResponseWriter, r *http.Request) bool {
 // EnableCORS enables https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
 // on the response.
 func EnableCORS(w http.ResponseWriter, _ *http.Request) {
+	if *disableCORS {
+		// see https://github.com/VictoriaMetrics/VictoriaMetrics/issues/8680
+		return
+	}
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 }
 
@@ -522,7 +569,7 @@ func GetQuotedRemoteAddr(r *http.Request) string {
 		remoteAddr += ", X-Forwarded-For: " + addr
 	}
 	// quote remoteAddr and X-Forwarded-For, since they may contain untrusted input
-	return strconv.Quote(remoteAddr)
+	return stringsutil.JSONString(remoteAddr)
 }
 
 type responseWriterWithAbort struct {
@@ -555,6 +602,21 @@ func (rwa *responseWriterWithAbort) WriteHeader(statusCode int) {
 	rwa.sentHeaders = true
 }
 
+// Flush implements net/http.Flusher interface
+func (rwa *responseWriterWithAbort) Flush() {
+	if rwa.aborted {
+		return
+	}
+	if !rwa.sentHeaders {
+		rwa.sentHeaders = true
+	}
+	flusher, ok := rwa.ResponseWriter.(http.Flusher)
+	if !ok {
+		logger.Panicf("BUG: it is expected http.ResponseWriter (%T) supports http.Flusher interface", rwa.ResponseWriter)
+	}
+	flusher.Flush()
+}
+
 // abort aborts the client connection associated with rwa.
 //
 // The last http chunk in the response stream is intentionally written incorrectly,
@@ -564,7 +626,7 @@ func (rwa *responseWriterWithAbort) abort() {
 		logger.Panicf("BUG: abort can be called only after http response headers are sent")
 	}
 	if rwa.aborted {
-		logger.WarnfSkipframes(2, "cannot abort the connection, since it has been already aborted")
+		// Nothing to do. The connection has been already aborted.
 		return
 	}
 	hj, ok := rwa.ResponseWriter.(http.Hijacker)
@@ -589,12 +651,9 @@ func (rwa *responseWriterWithAbort) abort() {
 }
 
 // Errorf writes formatted error message to w and to logger.
-func Errorf(w http.ResponseWriter, r *http.Request, format string, args ...interface{}) {
+func Errorf(w http.ResponseWriter, r *http.Request, format string, args ...any) {
 	errStr := fmt.Sprintf(format, args...)
-	remoteAddr := GetQuotedRemoteAddr(r)
-	requestURI := GetRequestURI(r)
-	errStr = fmt.Sprintf("remoteAddr: %s; requestURI: %s; %s", remoteAddr, requestURI, errStr)
-	logger.WarnfSkipframes(1, "%s", errStr)
+	logHTTPError(r, errStr)
 
 	// Extract statusCode from args
 	statusCode := http.StatusBadRequest
@@ -605,6 +664,7 @@ func Errorf(w http.ResponseWriter, r *http.Request, format string, args ...inter
 			break
 		}
 	}
+
 	if rwa, ok := w.(*responseWriterWithAbort); ok && rwa.sentHeaders {
 		// HTTP status code has been already sent to client, so it cannot be sent again.
 		// Just write errStr to the response and abort the client connection, so the client could notice the error.
@@ -613,6 +673,14 @@ func Errorf(w http.ResponseWriter, r *http.Request, format string, args ...inter
 		return
 	}
 	http.Error(w, errStr, statusCode)
+}
+
+// logHTTPError logs the errStr with the client remote address and the request URI obtained from r.
+func logHTTPError(r *http.Request, errStr string) {
+	remoteAddr := GetQuotedRemoteAddr(r)
+	requestURI := GetRequestURI(r)
+	errStr = fmt.Sprintf("remoteAddr: %s; requestURI: %s; %s", remoteAddr, requestURI, errStr)
+	logger.WarnfSkipframes(2, "%s", errStr)
 }
 
 // ErrorWithStatusCode is error with HTTP status code.
@@ -670,15 +738,32 @@ func GetRequestURI(r *http.Request) string {
 		return requestURI
 	}
 	_ = r.ParseForm()
-	queryArgs := r.PostForm.Encode()
-	if len(queryArgs) == 0 {
+	if len(r.PostForm) == 0 {
 		return requestURI
+	}
+	// code copied from url.Query.Encode
+	var queryArgs strings.Builder
+	for k := range r.PostForm {
+		vs := r.PostForm[k]
+		// mask authKey as well-known secret
+		if k == "authKey" {
+			vs = []string{"secret"}
+		}
+		keyEscaped := url.QueryEscape(k)
+		for _, v := range vs {
+			if queryArgs.Len() > 0 {
+				queryArgs.WriteByte('&')
+			}
+			queryArgs.WriteString(keyEscaped)
+			queryArgs.WriteByte('=')
+			queryArgs.WriteString(url.QueryEscape(v))
+		}
 	}
 	delimiter := "?"
 	if strings.Contains(requestURI, delimiter) {
 		delimiter = "&"
 	}
-	return requestURI + delimiter + queryArgs
+	return requestURI + delimiter + queryArgs.String()
 }
 
 // Redirect redirects to the given url.

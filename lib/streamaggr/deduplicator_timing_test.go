@@ -8,8 +8,8 @@ import (
 )
 
 func BenchmarkDeduplicatorPush(b *testing.B) {
-	pushFunc := func(tss []prompbmarshal.TimeSeries) {}
-	d := NewDeduplicator(pushFunc, time.Hour, nil)
+	pushFunc := func(_ []prompbmarshal.TimeSeries) {}
+	d := NewDeduplicator(pushFunc, true, time.Hour, nil, "global")
 
 	b.ReportAllocs()
 	b.SetBytes(int64(len(benchSeries)))

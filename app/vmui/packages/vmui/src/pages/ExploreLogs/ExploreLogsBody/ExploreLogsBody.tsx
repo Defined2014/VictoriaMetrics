@@ -1,68 +1,49 @@
-import React, { FC, useState, useMemo } from "preact/compat";
-import JsonView from "../../../components/Views/JsonView/JsonView";
-import { CodeIcon, ListIcon, TableIcon } from "../../../components/Main/Icons";
+import { FC, useRef } from "preact/compat";
+import { CodeIcon, ListIcon, TableIcon, PlayIcon } from "../../../components/Main/Icons";
 import Tabs from "../../../components/Main/Tabs/Tabs";
 import "./style.scss";
 import classNames from "classnames";
 import useDeviceDetect from "../../../hooks/useDeviceDetect";
 import { Logs } from "../../../api/types";
-import dayjs from "dayjs";
-import { useTimeState } from "../../../state/time/TimeStateContext";
 import useStateSearchParams from "../../../hooks/useStateSearchParams";
 import useSearchParamsFromObject from "../../../hooks/useSearchParamsFromObject";
-import TableSettings from "../../../components/Table/TableSettings/TableSettings";
-import useBoolean from "../../../hooks/useBoolean";
-import TableLogs from "./TableLogs";
-import GroupLogs from "./GroupLogs";
+import LineLoader from "../../../components/Main/LineLoader/LineLoader";
+import GroupView from "./views/GroupView/GroupView";
+import TableView from "./views/TableView/TableView";
+import JsonView from "./views/JsonView/JsonView";
+import LiveTailingView from "./views/LiveTailingView/LiveTailingView";
 
 export interface ExploreLogBodyProps {
   data: Logs[];
-  loaded?: boolean;
+  isLoading: boolean;
 }
 
 enum DisplayType {
   group = "group",
   table = "table",
   json = "json",
+  liveTailing = "liveTailing",
 }
 
 const tabs = [
-  { label: "Group", value: DisplayType.group, icon: <ListIcon/> },
-  { label: "Table", value: DisplayType.table, icon: <TableIcon/> },
-  { label: "JSON", value: DisplayType.json, icon: <CodeIcon/> },
+  { label: "Group", value: DisplayType.group, icon: <ListIcon/>, Component: GroupView },
+  { label: "Table", value: DisplayType.table, icon: <TableIcon/>, Component: TableView },
+  { label: "JSON", value: DisplayType.json, icon: <CodeIcon/>, Component: JsonView },
+  { label: "Live", value: DisplayType.liveTailing, icon: <PlayIcon/>, Component: LiveTailingView },
 ];
 
-const ExploreLogsBody: FC<ExploreLogBodyProps> = ({ data, loaded }) => {
+const ExploreLogsBody: FC<ExploreLogBodyProps> = ({ data, isLoading }) => {
   const { isMobile } = useDeviceDetect();
-  const { timezone } = useTimeState();
   const { setSearchParamsFromKeys } = useSearchParamsFromObject();
-
   const [activeTab, setActiveTab] = useStateSearchParams(DisplayType.group, "view");
-  const [displayColumns, setDisplayColumns] = useState<string[]>([]);
-  const { value: tableCompact, toggle: toggleTableCompact } = useBoolean(false);
-
-  const logs = useMemo(() => data.map((item) => ({
-    time: dayjs(item._time).tz().format("MMM DD, YYYY \nHH:mm:ss.SSS"),
-    data: JSON.stringify(item, null, 2),
-    ...item,
-  })) as Logs[], [data, timezone]);
-
-  const columns = useMemo(() => {
-    if (!logs?.length) return [];
-    const hideColumns = ["data", "_time"];
-    const keys = new Set<string>();
-    for (const item of logs) {
-      for (const key in item) {
-        keys.add(key);
-      }
-    }
-    return Array.from(keys).filter((col) => !hideColumns.includes(col));
-  }, [logs]);
+  const settingsRef = useRef<HTMLDivElement>(null);
 
   const handleChangeTab = (view: string) => {
     setActiveTab(view as DisplayType);
     setSearchParamsFromKeys({ view });
   };
+
+  const ActiveTabComponent = tabs.find(tab => tab.value === activeTab)?.Component;
 
   return (
     <div
@@ -72,6 +53,7 @@ const ExploreLogsBody: FC<ExploreLogBodyProps> = ({ data, loaded }) => {
         "vm-block_mobile": isMobile,
       })}
     >
+      {isLoading && <LineLoader/>}
       <div
         className={classNames({
           "vm-explore-logs-body-header": true,
@@ -79,24 +61,27 @@ const ExploreLogsBody: FC<ExploreLogBodyProps> = ({ data, loaded }) => {
           "vm-explore-logs-body-header_mobile": isMobile,
         })}
       >
-        <div className="vm-section-header__tabs">
+        <div
+          className={classNames({
+            "vm-section-header__tabs": true,
+            "vm-explore-logs-body-header__tabs_mobile": isMobile,
+          })}
+        >
           <Tabs
             activeItem={String(activeTab)}
             items={tabs}
             onChange={handleChangeTab}
           />
+          {activeTab !== DisplayType.liveTailing && (
+            <div className="vm-explore-logs-body-header__log-info">
+              Total logs returned: <b>{data.length}</b>
+            </div>
+          )}
         </div>
-        {activeTab === DisplayType.table && (
-          <div className="vm-explore-logs-body-header__settings">
-            <TableSettings
-              columns={columns}
-              defaultColumns={displayColumns}
-              onChangeColumns={setDisplayColumns}
-              tableCompact={tableCompact}
-              toggleTableCompact={toggleTableCompact}
-            />
-          </div>
-        )}
+        <div
+          className="vm-explore-logs-body-header__settings"
+          ref={settingsRef}
+        />
       </div>
 
       <div
@@ -105,32 +90,12 @@ const ExploreLogsBody: FC<ExploreLogBodyProps> = ({ data, loaded }) => {
           "vm-explore-logs-body__table_mobile": isMobile,
         })}
       >
-        {!data.length && (
-          <div className="vm-explore-logs-body__empty">
-            {loaded ? "No logs found" : "Run query to see logs"}
-          </div>
-        )}
-        {!!data.length && (
-          <>
-            {activeTab === DisplayType.table && (
-              <TableLogs
-                logs={logs}
-                displayColumns={displayColumns}
-                tableCompact={tableCompact}
-                columns={columns}
-              />
-            )}
-            {activeTab === DisplayType.group && (
-              <GroupLogs
-                logs={logs}
-                columns={columns}
-              />
-            )}
-            {activeTab === DisplayType.json && (
-              <JsonView data={data}/>
-            )}
-          </>
-        )}
+        {ActiveTabComponent &&
+            <ActiveTabComponent
+              data={data}
+              settingsRef={settingsRef}
+            />
+        }
       </div>
     </div>
   );

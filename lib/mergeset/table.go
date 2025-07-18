@@ -14,6 +14,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/atomicutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/cgroup"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/fs"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
@@ -46,21 +47,6 @@ const maxPartSize = 400e9
 
 // The interval for flushing buffered data to parts, so it becomes visible to search.
 const pendingItemsFlushInterval = time.Second
-
-// The interval for guaranteed flush of recently ingested data from memory to on-disk parts,
-// so they survive process crash.
-var dataFlushInterval = 5 * time.Second
-
-// SetDataFlushInterval sets the interval for guaranteed flush of recently ingested data from memory to disk.
-//
-// The data can be flushed from memory to disk more frequently if it doesn't fit the memory limit.
-//
-// This function must be called before initializing the indexdb.
-func SetDataFlushInterval(d time.Duration) {
-	if d > pendingItemsFlushInterval {
-		dataFlushInterval = d
-	}
-}
 
 // maxItemsPerCachedPart is the maximum items per created part by the merge,
 // which must be cached in the OS page cache.
@@ -100,6 +86,9 @@ type Table struct {
 	mergeIdx atomic.Uint64
 
 	path string
+
+	// The interval for guaranteed flush of recently ingested data from memory to on-disk parts so they survive process crash.
+	flushInterval time.Duration
 
 	flushCallback         func()
 	needFlushCallbackCall atomic.Bool
@@ -167,7 +156,7 @@ var rawItemsShardsPerTable = func() int {
 	return cpus * multiplier
 }()
 
-const maxBlocksPerShard = 256
+var maxBlocksPerShard = 256
 
 func (riss *rawItemsShards) init() {
 	riss.shards = make([]rawItemsShard, rawItemsShardsPerTable)
@@ -198,7 +187,7 @@ func (riss *rawItemsShards) addIbsToFlush(tb *Table, ibsToFlush []*inmemoryBlock
 	}
 	riss.ibsToFlush = append(riss.ibsToFlush, ibsToFlush...)
 	if len(riss.ibsToFlush) >= maxBlocksPerShard*cgroup.AvailableCPUs() {
-		ibsToMerge = ibsToFlush
+		ibsToMerge = riss.ibsToFlush
 		riss.ibsToFlush = nil
 	}
 	riss.ibsToFlushLock.Unlock()
@@ -228,9 +217,8 @@ type rawItemsShardNopad struct {
 type rawItemsShard struct {
 	rawItemsShardNopad
 
-	// The padding prevents false sharing on widespread platforms with
-	// 128 mod (cache line size) = 0 .
-	_ [128 - unsafe.Sizeof(rawItemsShardNopad{})%128]byte
+	// The padding prevents false sharing
+	_ [atomicutil.CacheLineSize - unsafe.Sizeof(rawItemsShardNopad{})%atomicutil.CacheLineSize]byte
 }
 
 func (ris *rawItemsShard) Len() int {
@@ -276,7 +264,8 @@ func (ris *rawItemsShard) addItems(items [][]byte) ([][]byte, []*inmemoryBlock) 
 		if len(itemPrefix) > 128 {
 			itemPrefix = itemPrefix[:128]
 		}
-		tooLongItemLogger.Errorf("skipping adding too long item to indexdb: len(item)=%d; it souldn't exceed %d bytes; item prefix=%q", len(item), maxInmemoryBlockSize, itemPrefix)
+		tooLongItemsTotal.Add(1)
+		tooLongItemLogger.Errorf("skipping adding too long item to indexdb: len(item)=%d; it shouldn't exceed %d bytes; item prefix=%q", len(item), maxInmemoryBlockSize, itemPrefix)
 	}
 	ris.ibs = ibs
 	ris.mu.Unlock()
@@ -289,6 +278,8 @@ func (ris *rawItemsShard) updateFlushDeadline() {
 }
 
 var tooLongItemLogger = logger.WithThrottler("tooLongItem", 5*time.Second)
+
+var tooLongItemsTotal atomicutil.Uint64
 
 type partWrapper struct {
 	// refCount is the number of references to partWrapper
@@ -342,6 +333,8 @@ func (pw *partWrapper) decRef() {
 
 // MustOpenTable opens a table on the given path.
 //
+// The flushInterval is the interval for flushing pending in-memory data to disk.
+//
 // Optional flushCallback is called every time new data batch is flushed
 // to the underlying storage and becomes visible to search.
 //
@@ -349,8 +342,14 @@ func (pw *partWrapper) decRef() {
 // to persistent storage.
 //
 // The table is created if it doesn't exist yet.
-func MustOpenTable(path string, flushCallback func(), prepareBlock PrepareBlockCallback, isReadOnly *atomic.Bool) *Table {
+func MustOpenTable(path string, flushInterval time.Duration, flushCallback func(), prepareBlock PrepareBlockCallback, isReadOnly *atomic.Bool) *Table {
 	path = filepath.Clean(path)
+
+	if flushInterval < pendingItemsFlushInterval {
+		// There is no sense in setting flushInterval to values smaller than pendingItemsFlushInterval,
+		// since pending rows unconditionally remain in memory for up to pendingItemsFlushInterval.
+		flushInterval = pendingItemsFlushInterval
+	}
 
 	// Create a directory for the table if it doesn't exist yet.
 	fs.MustMkdirIfNotExist(path)
@@ -360,6 +359,7 @@ func MustOpenTable(path string, flushCallback func(), prepareBlock PrepareBlockC
 
 	tb := &Table{
 		path:                 path,
+		flushInterval:        flushInterval,
 		flushCallback:        flushCallback,
 		prepareBlock:         prepareBlock,
 		isReadOnly:           isReadOnly,
@@ -456,6 +456,7 @@ func (tb *Table) startFlushCallbackWorker() {
 		for {
 			select {
 			case <-tb.stopCh:
+				tc.Stop()
 				tb.flushCallback()
 				tb.wg.Done()
 				return
@@ -491,9 +492,12 @@ func getFilePartsConcurrency() int {
 }
 
 // MustClose closes the table.
+//
+// This func must be called only when there are no goroutines using the the
+// table, such as ones that ingest or retrieve index data.
 func (tb *Table) MustClose() {
 	// Notify background workers to stop.
-	// The tb.partsLock is aquired in order to guarantee that tb.wg.Add() isn't called
+	// The tb.partsLock is acquired in order to guarantee that tb.wg.Add() isn't called
 	// after tb.stopCh is closed and tb.wg.Wait() is called below.
 	tb.partsLock.Lock()
 	close(tb.stopCh)
@@ -568,6 +572,12 @@ type TableMetrics struct {
 	DataBlocksCacheRequests     uint64
 	DataBlocksCacheMisses       uint64
 
+	DataBlocksSparseCacheSize         uint64
+	DataBlocksSparseCacheSizeBytes    uint64
+	DataBlocksSparseCacheSizeMaxBytes uint64
+	DataBlocksSparseCacheRequests     uint64
+	DataBlocksSparseCacheMisses       uint64
+
 	IndexBlocksCacheSize         uint64
 	IndexBlocksCacheSizeBytes    uint64
 	IndexBlocksCacheSizeMaxBytes uint64
@@ -575,6 +585,8 @@ type TableMetrics struct {
 	IndexBlocksCacheMisses       uint64
 
 	PartsRefCount uint64
+
+	TooLongItemsDroppedTotal uint64
 }
 
 // TotalItemsCount returns the total number of items in the table.
@@ -627,11 +639,19 @@ func (tb *Table) UpdateMetrics(m *TableMetrics) {
 	m.DataBlocksCacheRequests = ibCache.Requests()
 	m.DataBlocksCacheMisses = ibCache.Misses()
 
+	m.DataBlocksSparseCacheSize = uint64(ibSparseCache.Len())
+	m.DataBlocksSparseCacheSizeBytes = uint64(ibSparseCache.SizeBytes())
+	m.DataBlocksSparseCacheSizeMaxBytes = uint64(ibSparseCache.SizeMaxBytes())
+	m.DataBlocksSparseCacheRequests = ibSparseCache.Requests()
+	m.DataBlocksSparseCacheMisses = ibSparseCache.Misses()
+
 	m.IndexBlocksCacheSize = uint64(idxbCache.Len())
 	m.IndexBlocksCacheSizeBytes = uint64(idxbCache.SizeBytes())
 	m.IndexBlocksCacheSizeMaxBytes = uint64(idxbCache.SizeMaxBytes())
 	m.IndexBlocksCacheRequests = idxbCache.Requests()
 	m.IndexBlocksCacheMisses = idxbCache.Misses()
+
+	m.TooLongItemsDroppedTotal = tooLongItemsTotal.Load()
 }
 
 // AddItems adds the given items to the tb.
@@ -741,8 +761,7 @@ func (tb *Table) pendingItemsFlusher() {
 
 func (tb *Table) inmemoryPartsFlusher() {
 	// do not add jitter in order to guarantee flush interval
-	d := dataFlushInterval
-	ticker := time.NewTicker(d)
+	ticker := time.NewTicker(tb.flushInterval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -972,7 +991,7 @@ func (tb *Table) mustMergeInmemoryPartsFinal(pws []*partWrapper) *partWrapper {
 		bsrs = append(bsrs, bsr)
 	}
 
-	flushToDiskDeadline := getFlushToDiskDeadline(pws)
+	flushToDiskDeadline := getFlushToDiskDeadline(pws, tb.flushInterval)
 	return tb.mustMergeIntoInmemoryPart(bsrs, flushToDiskDeadline)
 }
 
@@ -991,7 +1010,7 @@ func (tb *Table) createInmemoryPart(ibs []*inmemoryBlock) *partWrapper {
 		return nil
 	}
 
-	flushToDiskDeadline := time.Now().Add(dataFlushInterval)
+	flushToDiskDeadline := time.Now().Add(tb.flushInterval)
 	if len(bsrs) == 1 {
 		// Nothing to merge. Just return a single inmemory part.
 		bsr := bsrs[0]
@@ -1253,8 +1272,8 @@ func (tb *Table) mergeParts(pws []*partWrapper, stopCh <-chan struct{}, isFinal 
 	return nil
 }
 
-func getFlushToDiskDeadline(pws []*partWrapper) time.Time {
-	d := time.Now().Add(dataFlushInterval)
+func getFlushToDiskDeadline(pws []*partWrapper, flushInterval time.Duration) time.Time {
+	d := time.Now().Add(flushInterval)
 	for _, pw := range pws {
 		if pw.mp != nil && pw.flushToDiskDeadline.Before(d) {
 			d = pw.flushToDiskDeadline
@@ -1331,7 +1350,7 @@ func (tb *Table) openCreatedPart(pws []*partWrapper, mpNew *inmemoryPart, dstPar
 	// Open the created part.
 	if mpNew != nil {
 		// Open the created part from memory.
-		flushToDiskDeadline := getFlushToDiskDeadline(pws)
+		flushToDiskDeadline := getFlushToDiskDeadline(pws, tb.flushInterval)
 		pwNew := newPartWrapperFromInmemoryPart(mpNew, flushToDiskDeadline)
 		return pwNew
 	}
@@ -1471,7 +1490,8 @@ func mustOpenParts(path string) []*partWrapper {
 	fs.MustRemoveAll(filepath.Join(path, "txn"))
 	fs.MustRemoveAll(filepath.Join(path, "tmp"))
 
-	partNames := mustReadPartNames(path)
+	partsFile := filepath.Join(path, partsFilename)
+	partNames := mustReadPartNames(partsFile, path)
 
 	// Remove dirs missing in partNames. These dirs may be left after unclean shutdown
 	// or after the update from versions prior to v1.90.0.
@@ -1484,9 +1504,8 @@ func mustOpenParts(path string) []*partWrapper {
 		// including unclean shutdown.
 		partPath := filepath.Join(path, partName)
 		if !fs.IsPathExist(partPath) {
-			partsFile := filepath.Join(path, partsFilename)
 			logger.Panicf("FATAL: part %q is listed in %q, but is missing on disk; "+
-				"ensure %q contents is not corrupted; remove %q to rebuild its' content from the list of existing parts",
+				"ensure %q contents is not corrupted; remove %q to rebuild its content from the list of existing parts",
 				partPath, partsFile, partsFile, partsFile)
 		}
 
@@ -1500,6 +1519,7 @@ func mustOpenParts(path string) []*partWrapper {
 		fn := de.Name()
 		if _, ok := m[fn]; !ok {
 			deletePath := filepath.Join(path, fn)
+			logger.Infof("deleting %q because it isn't listed in %q; this is the expected case after unclean shutdown", deletePath, partsFile)
 			fs.MustRemoveAll(deletePath)
 		}
 	}
@@ -1516,8 +1536,7 @@ func mustOpenParts(path string) []*partWrapper {
 		pw.incRef()
 		pws = append(pws, pw)
 	}
-	partNamesPath := filepath.Join(path, partsFilename)
-	if !fs.IsPathExist(partNamesPath) {
+	if !fs.IsPathExist(partsFile) {
 		// Create parts.json file if it doesn't exist yet.
 		// This should protect from possible carshloops just after the migration from versions below v1.90.0
 		// See https://github.com/VictoriaMetrics/VictoriaMetrics/issues/4336
@@ -1527,12 +1546,15 @@ func mustOpenParts(path string) []*partWrapper {
 	return pws
 }
 
-// CreateSnapshotAt creates tb snapshot in the given dstDir.
+// MustCreateSnapshotAt creates tb snapshot in the given dstDir.
 //
 // Snapshot is created using linux hard links, so it is usually created very quickly.
 //
-// The caller is responsible for data removal at dstDir on unsuccessful snapshot creation.
-func (tb *Table) CreateSnapshotAt(dstDir string) error {
+// The method panics in case of any error. The input it accepts is provided by
+// the storage (not by a user) and the error indicates either a bug in storage
+// or a problem with the underlying file system (such as insufficient
+// permissions).
+func (tb *Table) MustCreateSnapshotAt(dstDir string) {
 	logger.Infof("creating Table snapshot of %q...", tb.path)
 	startTime := time.Now()
 
@@ -1540,14 +1562,15 @@ func (tb *Table) CreateSnapshotAt(dstDir string) error {
 	srcDir := tb.path
 	srcDir, err = filepath.Abs(srcDir)
 	if err != nil {
-		return fmt.Errorf("cannot obtain absolute dir for %q: %w", srcDir, err)
+		logger.Panicf("FATAL: cannot obtain absolute dir for %q: %w", srcDir, err)
 	}
 	dstDir, err = filepath.Abs(dstDir)
 	if err != nil {
-		return fmt.Errorf("cannot obtain absolute dir for %q: %w", dstDir, err)
+		logger.Panicf("FATAL: cannot obtain absolute dir for %q: %w", dstDir, err)
 	}
-	if strings.HasPrefix(dstDir, srcDir+string(filepath.Separator)) {
-		return fmt.Errorf("cannot create snapshot %q inside the data dir %q", dstDir, srcDir)
+	prefix := srcDir + string(filepath.Separator)
+	if strings.HasPrefix(dstDir, prefix) {
+		logger.Panicf("BUG: cannot create snapshot %q inside the data dir %q", dstDir, srcDir)
 	}
 
 	// Flush inmemory items to disk.
@@ -1577,7 +1600,6 @@ func (tb *Table) CreateSnapshotAt(dstDir string) error {
 	fs.MustSyncPath(parentDir)
 
 	logger.Infof("created Table snapshot of %q at %q in %.3f seconds", srcDir, dstDir, time.Since(startTime).Seconds())
-	return nil
 }
 
 func mustWritePartNames(pws []*partWrapper, dstDir string) {
@@ -1595,20 +1617,19 @@ func mustWritePartNames(pws []*partWrapper, dstDir string) {
 	if err != nil {
 		logger.Panicf("BUG: cannot marshal partNames to JSON: %s", err)
 	}
-	partNamesPath := filepath.Join(dstDir, partsFilename)
-	fs.MustWriteAtomic(partNamesPath, data, true)
+	partsFile := filepath.Join(dstDir, partsFilename)
+	fs.MustWriteAtomic(partsFile, data, true)
 }
 
-func mustReadPartNames(srcDir string) []string {
-	partNamesPath := filepath.Join(srcDir, partsFilename)
-	if fs.IsPathExist(partNamesPath) {
-		data, err := os.ReadFile(partNamesPath)
+func mustReadPartNames(partsFile, srcDir string) []string {
+	if fs.IsPathExist(partsFile) {
+		data, err := os.ReadFile(partsFile)
 		if err != nil {
-			logger.Panicf("FATAL: cannot read %s file: %s", partsFilename, err)
+			logger.Panicf("FATAL: cannot read %q: %s", partsFile, err)
 		}
 		var partNames []string
 		if err := json.Unmarshal(data, &partNames); err != nil {
-			logger.Panicf("FATAL: cannot parse %s: %s", partNamesPath, err)
+			logger.Panicf("FATAL: cannot parse %q: %s", partsFile, err)
 		}
 		return partNames
 	}

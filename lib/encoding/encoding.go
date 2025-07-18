@@ -231,12 +231,12 @@ func unmarshalInt64Array(dst []int64, src []byte, mt MarshalType, firstValue int
 		return dst, nil
 	case MarshalTypeDeltaConst:
 		v := firstValue
-		tail, d, err := UnmarshalVarInt64(src)
-		if err != nil {
+		d, nLen := UnmarshalVarInt64(src)
+		if nLen <= 0 {
 			return nil, fmt.Errorf("cannot unmarshal delta value for delta const: %w", err)
 		}
-		if len(tail) > 0 {
-			return nil, fmt.Errorf("unexpected trailing data after delta const (d=%d): %d bytes", d, len(tail))
+		if nLen < len(src) {
+			return nil, fmt.Errorf("unexpected trailing data after delta const (d=%d): %d bytes", d, len(src)-nLen)
 		}
 		for itemsCount > 0 {
 			dst = append(dst, v)
@@ -327,7 +327,7 @@ func isDeltaConst(a []int64) bool {
 // i.e. arbitrary changing values.
 //
 // It is OK if a few gauges aren't detected (i.e. detected as counters),
-// since misdetected counters as gauges leads to worser compression ratio.
+// since misdetected counters as gauges leads to worse compression ratio.
 func isGauge(a []int64) bool {
 	// Check all the items in a, since a part of items may lead
 	// to incorrect gauge detection.

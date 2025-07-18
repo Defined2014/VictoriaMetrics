@@ -5,27 +5,30 @@ MAKE_PARALLEL := $(MAKE) -j $(MAKE_CONCURRENCY)
 DATEINFO_TAG ?= $(shell date -u +'%Y%m%d-%H%M%S')
 BUILDINFO_TAG ?= $(shell echo $$(git describe --long --all | tr '/' '-')$$( \
 	      git diff-index --quiet HEAD -- || echo '-dirty-'$$(git diff-index -u HEAD | openssl sha1 | cut -d' ' -f2 | cut -c 1-8)))
-LATEST_TAG ?= latest
 
 PKG_TAG ?= $(shell git tag -l --points-at HEAD)
 ifeq ($(PKG_TAG),)
 PKG_TAG := $(BUILDINFO_TAG)
 endif
 
+EXTRA_DOCKER_TAG_SUFFIX ?= EXTRA_DOCKER_TAG_SUFFIX
+
 GO_BUILDINFO = -X '$(PKG_PREFIX)/lib/buildinfo.Version=$(APP_NAME)-$(DATEINFO_TAG)-$(BUILDINFO_TAG)'
+TAR_OWNERSHIP ?= --owner=1000 --group=1000
 
 .PHONY: $(MAKECMDGOALS)
 
 include app/*/Makefile
+include codespell/Makefile
 include docs/Makefile
 include deployment/*/Makefile
 include dashboards/Makefile
-include snap/local/Makefile
 include package/release/Makefile
 
 all: \
 	victoria-metrics-prod \
 	victoria-logs-prod \
+	vlogscli-prod \
 	vmagent-prod \
 	vmalert-prod \
 	vmalert-tool-prod \
@@ -50,6 +53,7 @@ publish: \
 package: \
 	package-victoria-metrics \
 	package-victoria-logs \
+	package-vlogscli \
 	package-vmagent \
 	package-vmalert \
 	package-vmalert-tool \
@@ -193,12 +197,56 @@ vmutils-crossbuild: \
 	vmutils-openbsd-amd64 \
 	vmutils-windows-amd64
 
+publish-final-images:
+	PKG_TAG=$(TAG) APP_NAME=victoria-metrics $(MAKE) publish-via-docker-from-rc && \
+	PKG_TAG=$(TAG) APP_NAME=vmagent $(MAKE) publish-via-docker-from-rc && \
+	PKG_TAG=$(TAG) APP_NAME=vmalert $(MAKE) publish-via-docker-from-rc && \
+	PKG_TAG=$(TAG) APP_NAME=vmalert-tool $(MAKE) publish-via-docker-from-rc && \
+	PKG_TAG=$(TAG) APP_NAME=vmauth $(MAKE) publish-via-docker-from-rc && \
+	PKG_TAG=$(TAG) APP_NAME=vmbackup $(MAKE) publish-via-docker-from-rc && \
+	PKG_TAG=$(TAG) APP_NAME=vmrestore $(MAKE) publish-via-docker-from-rc && \
+	PKG_TAG=$(TAG) APP_NAME=vmctl $(MAKE) publish-via-docker-from-rc && \
+	PKG_TAG=$(TAG)-cluster APP_NAME=vminsert $(MAKE) publish-via-docker-from-rc && \
+	PKG_TAG=$(TAG)-cluster APP_NAME=vmselect $(MAKE) publish-via-docker-from-rc && \
+	PKG_TAG=$(TAG)-cluster APP_NAME=vmstorage $(MAKE) publish-via-docker-from-rc && \
+	PKG_TAG=$(TAG)-enterprise APP_NAME=victoria-metrics $(MAKE) publish-via-docker-from-rc && \
+	PKG_TAG=$(TAG)-enterprise APP_NAME=vmagent $(MAKE) publish-via-docker-from-rc && \
+	PKG_TAG=$(TAG)-enterprise APP_NAME=vmalert $(MAKE) publish-via-docker-from-rc && \
+	PKG_TAG=$(TAG)-enterprise APP_NAME=vmauth $(MAKE) publish-via-docker-from-rc && \
+	PKG_TAG=$(TAG)-enterprise APP_NAME=vmbackup $(MAKE) publish-via-docker-from-rc && \
+	PKG_TAG=$(TAG)-enterprise APP_NAME=vmrestore $(MAKE) publish-via-docker-from-rc && \
+	PKG_TAG=$(TAG)-enterprise-cluster APP_NAME=vminsert $(MAKE) publish-via-docker-from-rc && \
+	PKG_TAG=$(TAG)-enterprise-cluster APP_NAME=vmselect $(MAKE) publish-via-docker-from-rc && \
+	PKG_TAG=$(TAG)-enterprise-cluster APP_NAME=vmstorage $(MAKE) publish-via-docker-from-rc && \
+	PKG_TAG=$(TAG)-enterprise APP_NAME=vmgateway $(MAKE) publish-via-docker-from-rc && \
+	PKG_TAG=$(TAG)-enterprise APP_NAME=vmbackupmanager $(MAKE) publish-via-docker-from-rc && \
+	PKG_TAG=$(TAG) $(MAKE) publish-latest
+
+publish-latest:
+	PKG_TAG=$(TAG) APP_NAME=victoria-metrics $(MAKE) publish-via-docker-latest && \
+	PKG_TAG=$(TAG) APP_NAME=vmagent $(MAKE) publish-via-docker-latest && \
+	PKG_TAG=$(TAG) APP_NAME=vmalert $(MAKE) publish-via-docker-latest && \
+	PKG_TAG=$(TAG) APP_NAME=vmalert-tool $(MAKE) publish-via-docker-latest && \
+	PKG_TAG=$(TAG) APP_NAME=vmauth $(MAKE) publish-via-docker-latest && \
+	PKG_TAG=$(TAG) APP_NAME=vmbackup $(MAKE) publish-via-docker-latest && \
+	PKG_TAG=$(TAG) APP_NAME=vmrestore $(MAKE) publish-via-docker-latest && \
+	PKG_TAG=$(TAG) APP_NAME=vmctl $(MAKE) publish-via-docker-latest && \
+	PKG_TAG=$(TAG)-cluster APP_NAME=vminsert $(MAKE) publish-via-docker-latest && \
+	PKG_TAG=$(TAG)-cluster APP_NAME=vmselect $(MAKE) publish-via-docker-latest && \
+	PKG_TAG=$(TAG)-cluster APP_NAME=vmstorage $(MAKE) publish-via-docker-latest && \
+	PKG_TAG=$(TAG)-enterprise APP_NAME=vmgateway $(MAKE) publish-via-docker-latest
+	PKG_TAG=$(TAG)-enterprise APP_NAME=vmbackupmanager $(MAKE) publish-via-docker-latest
+
+publish-victoria-logs-latest:
+	PKG_TAG=$(TAG) APP_NAME=victoria-logs $(MAKE) publish-via-docker-latest
+	PKG_TAG=$(TAG) APP_NAME=vlogscli $(MAKE) publish-via-docker-latest
+
 publish-release:
 	rm -rf bin/*
-	git checkout $(TAG) && $(MAKE) release && LATEST_TAG=stable $(MAKE) publish && \
-		git checkout $(TAG)-cluster && $(MAKE) release && LATEST_TAG=cluster-stable $(MAKE) publish && \
-		git checkout $(TAG)-enterprise && $(MAKE) release && LATEST_TAG=enterprise-stable $(MAKE) publish && \
-		git checkout $(TAG)-enterprise-cluster && $(MAKE) release && LATEST_TAG=enterprise-cluster-stable $(MAKE) publish
+	git checkout $(TAG) && $(MAKE) release && $(MAKE) publish && \
+		git checkout $(TAG)-cluster && $(MAKE) release && $(MAKE) publish && \
+		git checkout $(TAG)-enterprise && $(MAKE) release && $(MAKE) publish && \
+		git checkout $(TAG)-enterprise-cluster && $(MAKE) release && $(MAKE) publish
 
 release:
 	$(MAKE_PARALLEL) \
@@ -245,7 +293,7 @@ release-victoria-metrics-windows-amd64:
 
 release-victoria-metrics-goos-goarch: victoria-metrics-$(GOOS)-$(GOARCH)-prod
 	cd bin && \
-		tar --transform="flags=r;s|-$(GOOS)-$(GOARCH)||" -czf victoria-metrics-$(GOOS)-$(GOARCH)-$(PKG_TAG).tar.gz \
+		tar $(TAR_OWNERSHIP) --transform="flags=r;s|-$(GOOS)-$(GOARCH)||" -czf victoria-metrics-$(GOOS)-$(GOARCH)-$(PKG_TAG).tar.gz \
 			victoria-metrics-$(GOOS)-$(GOARCH)-prod \
 		&& sha256sum victoria-metrics-$(GOOS)-$(GOARCH)-$(PKG_TAG).tar.gz \
 			victoria-metrics-$(GOOS)-$(GOARCH)-prod \
@@ -261,6 +309,14 @@ release-victoria-metrics-windows-goarch: victoria-metrics-windows-$(GOARCH)-prod
 			> victoria-metrics-windows-$(GOARCH)-$(PKG_TAG)_checksums.txt
 	cd bin && rm -rf \
 		victoria-metrics-windows-$(GOARCH)-prod.exe
+
+release-victoria-logs-bundle: \
+	release-victoria-logs \
+	release-vlogscli
+
+publish-victoria-logs-bundle: \
+	publish-victoria-logs \
+	publish-vlogscli
 
 release-victoria-logs:
 	$(MAKE_PARALLEL) release-victoria-logs-linux-386 \
@@ -302,7 +358,7 @@ release-victoria-logs-windows-amd64:
 
 release-victoria-logs-goos-goarch: victoria-logs-$(GOOS)-$(GOARCH)-prod
 	cd bin && \
-		tar --transform="flags=r;s|-$(GOOS)-$(GOARCH)||" -czf victoria-logs-$(GOOS)-$(GOARCH)-$(PKG_TAG).tar.gz \
+		tar $(TAR_OWNERSHIP) --transform="flags=r;s|-$(GOOS)-$(GOARCH)||" -czf victoria-logs-$(GOOS)-$(GOARCH)-$(PKG_TAG).tar.gz \
 			victoria-logs-$(GOOS)-$(GOARCH)-prod \
 		&& sha256sum victoria-logs-$(GOOS)-$(GOARCH)-$(PKG_TAG).tar.gz \
 			victoria-logs-$(GOOS)-$(GOARCH)-prod \
@@ -319,6 +375,63 @@ release-victoria-logs-windows-goarch: victoria-logs-windows-$(GOARCH)-prod
 	cd bin && rm -rf \
 		victoria-logs-windows-$(GOARCH)-prod.exe
 
+release-vlogscli:
+	$(MAKE_PARALLEL) release-vlogscli-linux-386 \
+		release-vlogscli-linux-amd64 \
+		release-vlogscli-linux-arm \
+		release-vlogscli-linux-arm64 \
+		release-vlogscli-darwin-amd64 \
+		release-vlogscli-darwin-arm64 \
+		release-vlogscli-freebsd-amd64 \
+		release-vlogscli-openbsd-amd64 \
+		release-vlogscli-windows-amd64
+
+release-vlogscli-linux-386:
+	GOOS=linux GOARCH=386 $(MAKE) release-vlogscli-goos-goarch
+
+release-vlogscli-linux-amd64:
+	GOOS=linux GOARCH=amd64 $(MAKE) release-vlogscli-goos-goarch
+
+release-vlogscli-linux-arm:
+	GOOS=linux GOARCH=arm $(MAKE) release-vlogscli-goos-goarch
+
+release-vlogscli-linux-arm64:
+	GOOS=linux GOARCH=arm64 $(MAKE) release-vlogscli-goos-goarch
+
+release-vlogscli-darwin-amd64:
+	GOOS=darwin GOARCH=amd64 $(MAKE) release-vlogscli-goos-goarch
+
+release-vlogscli-darwin-arm64:
+	GOOS=darwin GOARCH=arm64 $(MAKE) release-vlogscli-goos-goarch
+
+release-vlogscli-freebsd-amd64:
+	GOOS=freebsd GOARCH=amd64 $(MAKE) release-vlogscli-goos-goarch
+
+release-vlogscli-openbsd-amd64:
+	GOOS=openbsd GOARCH=amd64 $(MAKE) release-vlogscli-goos-goarch
+
+release-vlogscli-windows-amd64:
+	GOARCH=amd64 $(MAKE) release-vlogscli-windows-goarch
+
+release-vlogscli-goos-goarch: vlogscli-$(GOOS)-$(GOARCH)-prod
+	cd bin && \
+		tar $(TAR_OWNERSHIP) --transform="flags=r;s|-$(GOOS)-$(GOARCH)||" -czf vlogscli-$(GOOS)-$(GOARCH)-$(PKG_TAG).tar.gz \
+			vlogscli-$(GOOS)-$(GOARCH)-prod \
+		&& sha256sum vlogscli-$(GOOS)-$(GOARCH)-$(PKG_TAG).tar.gz \
+			vlogscli-$(GOOS)-$(GOARCH)-prod \
+			| sed s/-$(GOOS)-$(GOARCH)-prod/-prod/ > vlogscli-$(GOOS)-$(GOARCH)-$(PKG_TAG)_checksums.txt
+	cd bin && rm -rf vlogscli-$(GOOS)-$(GOARCH)-prod
+
+release-vlogscli-windows-goarch: vlogscli-windows-$(GOARCH)-prod
+	cd bin && \
+		zip vlogscli-windows-$(GOARCH)-$(PKG_TAG).zip \
+			vlogscli-windows-$(GOARCH)-prod.exe \
+		&& sha256sum vlogscli-windows-$(GOARCH)-$(PKG_TAG).zip \
+			vlogscli-windows-$(GOARCH)-prod.exe \
+			> vlogscli-windows-$(GOARCH)-$(PKG_TAG)_checksums.txt
+	cd bin && rm -rf \
+		vlogscli-windows-$(GOARCH)-prod.exe
+
 release-vmutils: \
 	release-vmutils-linux-386 \
 	release-vmutils-linux-amd64 \
@@ -332,7 +445,7 @@ release-vmutils: \
 
 release-vmutils-linux-386:
 	GOOS=linux GOARCH=386 $(MAKE) release-vmutils-goos-goarch
-	
+
 release-vmutils-linux-amd64:
 	GOOS=linux GOARCH=amd64 $(MAKE) release-vmutils-goos-goarch
 
@@ -366,7 +479,7 @@ release-vmutils-goos-goarch: \
 	vmrestore-$(GOOS)-$(GOARCH)-prod \
 	vmctl-$(GOOS)-$(GOARCH)-prod
 	cd bin && \
-		tar --transform="flags=r;s|-$(GOOS)-$(GOARCH)||" -czf vmutils-$(GOOS)-$(GOARCH)-$(PKG_TAG).tar.gz \
+		tar $(TAR_OWNERSHIP) --transform="flags=r;s|-$(GOOS)-$(GOARCH)||" -czf vmutils-$(GOOS)-$(GOARCH)-$(PKG_TAG).tar.gz \
 			vmagent-$(GOOS)-$(GOARCH)-prod \
 			vmalert-$(GOOS)-$(GOARCH)-prod \
 			vmalert-tool-$(GOOS)-$(GOARCH)-prod \
@@ -433,40 +546,47 @@ pprof-cpu:
 fmt:
 	gofmt -l -w -s ./lib
 	gofmt -l -w -s ./app
+	gofmt -l -w -s ./apptest
 
 vet:
-	go vet ./lib/...
+	GOEXPERIMENT=synctest go vet ./lib/...
 	go vet ./app/...
+	go vet ./apptest/...
 
 check-all: fmt vet golangci-lint govulncheck
 
+clean-checkers: remove-golangci-lint remove-govulncheck
+
 test:
-	go test ./lib/... ./app/...
+	GOEXPERIMENT=synctest go test ./lib/... ./app/...
 
 test-race:
-	go test -race ./lib/... ./app/...
+	GOEXPERIMENT=synctest go test -race ./lib/... ./app/...
 
 test-pure:
-	CGO_ENABLED=0 go test ./lib/... ./app/...
+	GOEXPERIMENT=synctest CGO_ENABLED=0 go test ./lib/... ./app/...
 
 test-full:
-	go test -coverprofile=coverage.txt -covermode=atomic ./lib/... ./app/...
+	GOEXPERIMENT=synctest go test -coverprofile=coverage.txt -covermode=atomic ./lib/... ./app/...
 
 test-full-386:
-	GOARCH=386 go test -coverprofile=coverage.txt -covermode=atomic ./lib/... ./app/...
+	GOEXPERIMENT=synctest GOARCH=386 go test -coverprofile=coverage.txt -covermode=atomic ./lib/... ./app/...
+
+integration-test: victoria-metrics vmagent vmalert vmauth vmctl vmbackup vmrestore
+	go test ./apptest/... -skip="^TestCluster.*"
 
 benchmark:
-	go test -bench=. ./lib/...
+	GOEXPERIMENT=synctest go test -bench=. ./lib/...
 	go test -bench=. ./app/...
 
 benchmark-pure:
-	CGO_ENABLED=0 go test -bench=. ./lib/...
+	GOEXPERIMENT=synctest CGO_ENABLED=0 go test -bench=. ./lib/...
 	CGO_ENABLED=0 go test -bench=. ./app/...
 
 vendor-update:
-	go get -u -d ./lib/...
-	go get -u -d ./app/...
-	go mod tidy -compat=1.21
+	go get -u ./lib/...
+	go get -u ./app/...
+	go mod tidy -compat=1.24
 	go mod vendor
 
 app-local:
@@ -489,10 +609,13 @@ install-qtc:
 
 
 golangci-lint: install-golangci-lint
-	golangci-lint run
+	GOEXPERIMENT=synctest golangci-lint run
 
 install-golangci-lint:
-	which golangci-lint || curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(shell go env GOPATH)/bin v1.55.1
+	which golangci-lint || curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(shell go env GOPATH)/bin v1.64.7
+
+remove-golangci-lint:
+	rm -rf `which golangci-lint`
 
 govulncheck: install-govulncheck
 	govulncheck ./...
@@ -500,38 +623,11 @@ govulncheck: install-govulncheck
 install-govulncheck:
 	which govulncheck || go install golang.org/x/vuln/cmd/govulncheck@latest
 
+remove-govulncheck:
+	rm -rf `which govulncheck`
+
 install-wwhrd:
 	which wwhrd || go install github.com/frapposelli/wwhrd@latest
 
 check-licenses: install-wwhrd
 	wwhrd check -f .wwhrd.yml
-
-copy-docs:
-# The 'printf' function is used instead of 'echo' or 'echo -e' to handle line breaks (e.g. '\n') in the same way on different operating systems (MacOS/Ubuntu Linux/Arch Linux) and their shells (bash/sh/zsh/fish).
-# For details, see https://github.com/VictoriaMetrics/VictoriaMetrics/pull/4548#issue-1782796419 and https://stackoverflow.com/questions/8467424/echo-newline-in-bash-prints-literal-n
-	echo "---" > ${DST}
-	@if [ ${ORDER} -ne 0 ]; then \
-		echo "sort: ${ORDER}" >> ${DST}; \
-		echo "weight: ${ORDER}" >> ${DST}; \
-		printf "menu:\n  docs:\n    parent: 'victoriametrics'\n    weight: ${ORDER}\n" >> ${DST}; \
-	fi
-
-	echo "title: ${TITLE}" >> ${DST}
-	@if [ ${OLD_URL} ]; then \
-		printf "aliases:\n  - ${OLD_URL}\n" >> ${DST}; \
-	fi
-	echo "---" >> ${DST}
-	cat ${SRC} >> ${DST}
-	sed -i='.tmp' 's/<img src=\"docs\//<img src=\"/' ${DST}
-	rm -rf docs/*.tmp
-
-# Copies docs for all components and adds the order/weight tag, title, menu position and alias with the backward compatible link for the old site.
-# For ORDER=0 it adds no order tag/weight tag.
-# FOR OLD_URL - relative link, used for backward compatibility with the link from documentation based on GitHub pages (old one)
-# FOR OLD_URL='' it adds no alias, it should be empty for every new page, don't change it for already existing links.
-# Images starting with <img src="docs/ are replaced with <img src="
-# Cluster docs are supposed to be ordered as 2nd.
-# The rest of docs is ordered manually.
-docs-sync:
-	SRC=README.md DST=docs/README.md OLD_URL='' ORDER=0 TITLE=VictoriaMetrics $(MAKE) copy-docs
-	SRC=README.md DST=docs/Single-server-VictoriaMetrics.md OLD_URL='/Single-server-VictoriaMetrics.html' TITLE=VictoriaMetrics ORDER=1 $(MAKE) copy-docs

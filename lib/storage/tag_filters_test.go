@@ -734,6 +734,8 @@ func TestGetRegexpFromCache(t *testing.T) {
 	f("(?i)foo.*bar", nil, []string{"foobar", "FooBAR", "FOOxxbaR"}, []string{"xfoobar", "foobarx", "xFOObarx"}, "")
 
 	f(".*", nil, []string{"", "a", "foo", "foobar"}, nil, "")
+	f(`.+|`, nil, []string{"", "a", "foo", "foobar"}, nil, "")
+	f(`.+||foo|bar`, nil, []string{"", "a", "foo", "foobar"}, nil, "")
 	f("foo|.*", nil, []string{"", "a", "foo", "foobar"}, nil, "")
 	f(".+", nil, []string{"a", "foo"}, []string{""}, "")
 	f("(.+)*(foo)?", nil, []string{"a", "foo", ""}, nil, "")
@@ -784,7 +786,7 @@ func TestTagFilterMatchSuffix(t *testing.T) {
 		}
 	}
 
-	t.Run("plain-value", func(t *testing.T) {
+	t.Run("plain-value", func(_ *testing.T) {
 		value := "xx"
 		isNegative := false
 		isRegexp := false
@@ -796,7 +798,7 @@ func TestTagFilterMatchSuffix(t *testing.T) {
 		mismatch("foo")
 		mismatch("xx")
 	})
-	t.Run("negative-plain-value", func(t *testing.T) {
+	t.Run("negative-plain-value", func(_ *testing.T) {
 		value := "xx"
 		isNegative := true
 		isRegexp := false
@@ -811,7 +813,7 @@ func TestTagFilterMatchSuffix(t *testing.T) {
 		match("xxx")
 		match("xxfoo")
 	})
-	t.Run("regexp-convert-to-plain-value", func(t *testing.T) {
+	t.Run("regexp-convert-to-plain-value", func(_ *testing.T) {
 		value := "http"
 		isNegative := false
 		isRegexp := true
@@ -824,7 +826,7 @@ func TestTagFilterMatchSuffix(t *testing.T) {
 		mismatch("http")
 		mismatch("foobar")
 	})
-	t.Run("negative-regexp-convert-to-plain-value", func(t *testing.T) {
+	t.Run("negative-regexp-convert-to-plain-value", func(_ *testing.T) {
 		value := "http"
 		isNegative := true
 		isRegexp := true
@@ -839,7 +841,7 @@ func TestTagFilterMatchSuffix(t *testing.T) {
 		match("httpx")
 		match("foobar")
 	})
-	t.Run("regexp-prefix-any-suffix", func(t *testing.T) {
+	t.Run("regexp-prefix-any-suffix", func(_ *testing.T) {
 		value := "http.*"
 		isNegative := false
 		isRegexp := true
@@ -852,7 +854,7 @@ func TestTagFilterMatchSuffix(t *testing.T) {
 		match("http")
 		match("foobar")
 	})
-	t.Run("negative-regexp-prefix-any-suffix", func(t *testing.T) {
+	t.Run("negative-regexp-prefix-any-suffix", func(_ *testing.T) {
 		value := "http.*"
 		isNegative := true
 		isRegexp := true
@@ -867,7 +869,7 @@ func TestTagFilterMatchSuffix(t *testing.T) {
 		mismatch("httpsdf")
 		mismatch("foobar")
 	})
-	t.Run("regexp-prefix-contains-suffix", func(t *testing.T) {
+	t.Run("regexp-prefix-contains-suffix", func(_ *testing.T) {
 		value := "http.*foo.*"
 		isNegative := false
 		isRegexp := true
@@ -883,7 +885,7 @@ func TestTagFilterMatchSuffix(t *testing.T) {
 		match("xfoobar")
 		match("xfoo")
 	})
-	t.Run("negative-regexp-prefix-contains-suffix", func(t *testing.T) {
+	t.Run("negative-regexp-prefix-contains-suffix", func(_ *testing.T) {
 		value := "http.*foo.*"
 		isNegative := true
 		isRegexp := true
@@ -903,7 +905,7 @@ func TestTagFilterMatchSuffix(t *testing.T) {
 		mismatch("httpxfoobar")
 		mismatch("httpxfoo")
 	})
-	t.Run("negative-regexp-noprefix-contains-suffix", func(t *testing.T) {
+	t.Run("negative-regexp-noprefix-contains-suffix", func(_ *testing.T) {
 		value := ".*foo.*"
 		isNegative := true
 		isRegexp := true
@@ -919,7 +921,7 @@ func TestTagFilterMatchSuffix(t *testing.T) {
 		mismatch("xfoobar")
 		mismatch("xfoo")
 	})
-	t.Run("regexp-prefix-special-suffix", func(t *testing.T) {
+	t.Run("regexp-prefix-special-suffix", func(_ *testing.T) {
 		value := "http.*bar"
 		isNegative := false
 		isRegexp := true
@@ -934,7 +936,7 @@ func TestTagFilterMatchSuffix(t *testing.T) {
 		match("foobar")
 		mismatch("foobarx")
 	})
-	t.Run("negative-regexp-prefix-special-suffix", func(t *testing.T) {
+	t.Run("negative-regexp-prefix-special-suffix", func(_ *testing.T) {
 		value := "http.*bar"
 		isNegative := true
 		isRegexp := true
@@ -951,7 +953,7 @@ func TestTagFilterMatchSuffix(t *testing.T) {
 		match("httpxybarx")
 		mismatch("ahttpxybar")
 	})
-	t.Run("negative-regexp-noprefix-special-suffix", func(t *testing.T) {
+	t.Run("negative-regexp-noprefix-special-suffix", func(_ *testing.T) {
 		value := ".*bar"
 		isNegative := true
 		isRegexp := true
@@ -1002,14 +1004,14 @@ func TestTagFilterMatchSuffix(t *testing.T) {
 		mismatch("bar")
 		match("xhttpbar")
 	})
-	t.Run("regexp-iflag-no-suffix", func(t *testing.T) {
+	t.Run("regexp-iflag-no-suffix", func(_ *testing.T) {
 		value := "(?i)http"
 		isNegative := false
 		isRegexp := true
 		expectedPrefix := tvNoTrailingTagSeparator("")
 		init(value, isNegative, isRegexp, expectedPrefix)
 
-		// Must match case-insenstive http
+		// Must match case-insensitive http
 		match("http")
 		match("HTTP")
 		match("hTTp")
@@ -1020,7 +1022,7 @@ func TestTagFilterMatchSuffix(t *testing.T) {
 		mismatch("xhttp://")
 		mismatch("hTTp://foobar.com")
 	})
-	t.Run("negative-regexp-iflag-no-suffix", func(t *testing.T) {
+	t.Run("negative-regexp-iflag-no-suffix", func(_ *testing.T) {
 		value := "(?i)http"
 		isNegative := true
 		isRegexp := true
@@ -1038,14 +1040,14 @@ func TestTagFilterMatchSuffix(t *testing.T) {
 		match("xhttp://")
 		match("hTTp://foobar.com")
 	})
-	t.Run("regexp-iflag-any-suffix", func(t *testing.T) {
+	t.Run("regexp-iflag-any-suffix", func(_ *testing.T) {
 		value := "(?i)http.*"
 		isNegative := false
 		isRegexp := true
 		expectedPrefix := tvNoTrailingTagSeparator("")
 		init(value, isNegative, isRegexp, expectedPrefix)
 
-		// Must match case-insenstive http
+		// Must match case-insensitive http
 		match("http")
 		match("HTTP")
 		match("hTTp://foobar.com")
@@ -1055,7 +1057,7 @@ func TestTagFilterMatchSuffix(t *testing.T) {
 		mismatch("xhttp")
 		mismatch("xhttp://")
 	})
-	t.Run("negative-regexp-iflag-any-suffix", func(t *testing.T) {
+	t.Run("negative-regexp-iflag-any-suffix", func(_ *testing.T) {
 		value := "(?i)http.*"
 		isNegative := true
 		isRegexp := true
@@ -1183,7 +1185,7 @@ func TestSimplifyRegexp(t *testing.T) {
 	f("ab|ad", "a", "[bd]")
 	f("(?i)xyz", "", "(?i:XYZ)")
 	f("(?i)foo|bar", "", "(?i:FOO|BAR)")
-	f("(?i)up.+x", "", "(?i-s:UP.+X)")
+	f("(?i)up.+x", "", "(?is:UP.+X)")
 	f("(?smi)xy.*z$", "", "(?ims:XY.*Z$)")
 
 	// test invalid regexps
@@ -1288,4 +1290,119 @@ func TestTagFiltersAddEmpty(t *testing.T) {
 	if len(tfs.tfs) != 5 {
 		t.Fatalf("missing added filter")
 	}
+}
+
+func TestTagFilterLess(t *testing.T) {
+	// Create helper function f to execute and verify Less method results
+	f := func(tf1, tf2 *tagFilter, expected bool) {
+		t.Helper()
+
+		result := tf1.Less(tf2)
+		if result != expected {
+			t.Fatalf("unexpected Less result: got %v, want %v for %v.Less(%v)",
+				result, expected, tf1, tf2)
+		}
+	}
+
+	// Test composite filters come first
+	compositeFilter := &tagFilter{
+		key:        []byte{compositeTagKeyPrefix, 'c', 'o', 'm', 'p', 'o', 's', 'i', 't', 'e'},
+		matchCost:  20,
+		isRegexp:   false,
+		orSuffixes: []string{},
+	}
+	normalFilter := &tagFilter{
+		key:        []byte("normal"),
+		matchCost:  10, // Although matchCost is smaller, composite filter should come first
+		isRegexp:   false,
+		orSuffixes: []string{},
+	}
+	f(compositeFilter, normalFilter, true)
+	f(normalFilter, compositeFilter, false)
+
+	// Test lower matchCost comes first (when neither is composite)
+	lowCost := &tagFilter{
+		key:        []byte("key1"),
+		matchCost:  5,
+		isRegexp:   false,
+		orSuffixes: []string{},
+	}
+	highCost := &tagFilter{
+		key:        []byte("key1"),
+		matchCost:  15,
+		isRegexp:   false,
+		orSuffixes: []string{},
+	}
+	f(lowCost, highCost, true)
+	f(highCost, lowCost, false)
+
+	// Test non-regexp filters come first
+	nonRegexp := &tagFilter{
+		key:        []byte("key2"),
+		matchCost:  10,
+		isRegexp:   false,
+		orSuffixes: []string{},
+	}
+	regexp := &tagFilter{
+		key:        []byte("key2"),
+		matchCost:  10,
+		isRegexp:   true,
+		orSuffixes: []string{},
+	}
+	f(nonRegexp, regexp, true)
+	f(regexp, nonRegexp, false)
+
+	// Test fewer orSuffixes come first
+	fewSuffixes := &tagFilter{
+		key:        []byte("key3"),
+		matchCost:  10,
+		isRegexp:   false,
+		orSuffixes: []string{"a"},
+	}
+	manySuffixes := &tagFilter{
+		key:        []byte("key3"),
+		matchCost:  10,
+		isRegexp:   false,
+		orSuffixes: []string{"a", "b"},
+	}
+	f(fewSuffixes, manySuffixes, true)
+	f(manySuffixes, fewSuffixes, false)
+
+	// Test non-negative filters come first
+	nonNegative := &tagFilter{
+		key:        []byte("key4"),
+		matchCost:  10,
+		isRegexp:   false,
+		orSuffixes: []string{},
+		isNegative: false,
+	}
+	negative := &tagFilter{
+		key:        []byte("key4"),
+		matchCost:  10,
+		isRegexp:   false,
+		orSuffixes: []string{},
+		isNegative: true,
+	}
+	f(nonNegative, negative, true)
+	f(negative, nonNegative, false)
+
+	// Test lower lexicographical prefix comes first
+	prefixA := &tagFilter{
+		key:        []byte("key5"),
+		matchCost:  10,
+		isRegexp:   false,
+		orSuffixes: []string{},
+		isNegative: false,
+		prefix:     []byte("aaa"),
+	}
+	prefixB := &tagFilter{
+		key:        []byte("key5"),
+		matchCost:  10,
+		isRegexp:   false,
+		orSuffixes: []string{},
+		isNegative: false,
+		prefix:     []byte("bbb"),
+	}
+	f(prefixA, prefixB, true)
+	f(prefixB, prefixA, false)
 }

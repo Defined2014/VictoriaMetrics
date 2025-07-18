@@ -61,8 +61,8 @@ type MultiLineRegex struct {
 }
 
 // UnmarshalYAML unmarshals mlr from YAML passed to f.
-func (mlr *MultiLineRegex) UnmarshalYAML(f func(interface{}) error) error {
-	var v interface{}
+func (mlr *MultiLineRegex) UnmarshalYAML(f func(any) error) error {
+	var v any
 	if err := f(&v); err != nil {
 		return fmt.Errorf("cannot parse multiline regex: %w", err)
 	}
@@ -74,12 +74,12 @@ func (mlr *MultiLineRegex) UnmarshalYAML(f func(interface{}) error) error {
 	return nil
 }
 
-func stringValue(v interface{}) (string, error) {
+func stringValue(v any) (string, error) {
 	if v == nil {
 		return "null", nil
 	}
 	switch x := v.(type) {
-	case []interface{}:
+	case []any:
 		a := make([]string, len(x))
 		for i, xx := range x {
 			s, err := stringValue(xx)
@@ -106,7 +106,7 @@ func stringValue(v interface{}) (string, error) {
 }
 
 // MarshalYAML marshals mlr to YAML.
-func (mlr *MultiLineRegex) MarshalYAML() (interface{}, error) {
+func (mlr *MultiLineRegex) MarshalYAML() (any, error) {
 	if strings.ContainsAny(mlr.S, "([") {
 		// The mlr.S contains groups. Fall back to returning the regexp as is without splitting it into parts.
 		// This fixes https://github.com/VictoriaMetrics/VictoriaMetrics/issues/2928 .
@@ -263,22 +263,22 @@ func parseRelabelConfig(rc *RelabelConfig) (*parsedRelabelConfig, error) {
 	switch action {
 	case "graphite":
 		if graphiteMatchTemplate == nil {
-			return nil, fmt.Errorf("missing `match` for `action=graphite`; see https://docs.victoriametrics.com/vmagent.html#graphite-relabeling")
+			return nil, fmt.Errorf("missing `match` for `action=graphite`; see https://docs.victoriametrics.com/victoriametrics/vmagent/#graphite-relabeling")
 		}
 		if len(graphiteLabelRules) == 0 {
-			return nil, fmt.Errorf("missing `labels` for `action=graphite`; see https://docs.victoriametrics.com/vmagent.html#graphite-relabeling")
+			return nil, fmt.Errorf("missing `labels` for `action=graphite`; see https://docs.victoriametrics.com/victoriametrics/vmagent/#graphite-relabeling")
 		}
 		if len(rc.SourceLabels) > 0 {
-			return nil, fmt.Errorf("`source_labels` cannot be used with `action=graphite`; see https://docs.victoriametrics.com/vmagent.html#graphite-relabeling")
+			return nil, fmt.Errorf("`source_labels` cannot be used with `action=graphite`; see https://docs.victoriametrics.com/victoriametrics/vmagent/#graphite-relabeling")
 		}
 		if rc.TargetLabel != "" {
-			return nil, fmt.Errorf("`target_label` cannot be used with `action=graphite`; see https://docs.victoriametrics.com/vmagent.html#graphite-relabeling")
+			return nil, fmt.Errorf("`target_label` cannot be used with `action=graphite`; see https://docs.victoriametrics.com/victoriametrics/vmagent/#graphite-relabeling")
 		}
 		if rc.Replacement != nil {
-			return nil, fmt.Errorf("`replacement` cannot be used with `action=graphite`; see https://docs.victoriametrics.com/vmagent.html#graphite-relabeling")
+			return nil, fmt.Errorf("`replacement` cannot be used with `action=graphite`; see https://docs.victoriametrics.com/victoriametrics/vmagent/#graphite-relabeling")
 		}
 		if rc.Regex != nil {
-			return nil, fmt.Errorf("`regex` cannot be used for `action=graphite`; see https://docs.victoriametrics.com/vmagent.html#graphite-relabeling")
+			return nil, fmt.Errorf("`regex` cannot be used for `action=graphite`; see https://docs.victoriametrics.com/victoriametrics/vmagent/#graphite-relabeling")
 		}
 	case "replace":
 		if targetLabel == "" {
@@ -293,7 +293,7 @@ func parseRelabelConfig(rc *RelabelConfig) (*parsedRelabelConfig, error) {
 		}
 	case "keep_if_contains":
 		if targetLabel == "" {
-			return nil, fmt.Errorf("`target_label` must be set for `action=keep_if_containes`")
+			return nil, fmt.Errorf("`target_label` must be set for `action=keep_if_contains`")
 		}
 		if len(sourceLabels) == 0 {
 			return nil, fmt.Errorf("`source_labels` must contain at least a single entry for `action=keep_if_contains`")
@@ -303,7 +303,7 @@ func parseRelabelConfig(rc *RelabelConfig) (*parsedRelabelConfig, error) {
 		}
 	case "drop_if_contains":
 		if targetLabel == "" {
-			return nil, fmt.Errorf("`target_label` must be set for `action=drop_if_containes`")
+			return nil, fmt.Errorf("`target_label` must be set for `action=drop_if_contains`")
 		}
 		if len(sourceLabels) == 0 {
 			return nil, fmt.Errorf("`source_labels` must contain at least a single entry for `action=drop_if_contains`")
@@ -435,9 +435,9 @@ func parseRelabelConfig(rc *RelabelConfig) (*parsedRelabelConfig, error) {
 }
 
 func isDefaultRegex(expr string) bool {
-	prefix, suffix := regexutil.Simplify(expr)
+	prefix, suffix := regexutil.SimplifyPromRegex(expr)
 	if prefix != "" {
 		return false
 	}
-	return suffix == "(?-s:.*)"
+	return suffix == "(?s:.*)"
 }

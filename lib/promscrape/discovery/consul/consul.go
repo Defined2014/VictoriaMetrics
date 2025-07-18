@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promauth"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promutils"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/proxy"
 )
 
@@ -19,7 +19,7 @@ type SDConfig struct {
 	// Namespace only supported at enterprise consul.
 	// https://www.consul.io/docs/enterprise/namespaces
 	Namespace string `yaml:"namespace,omitempty"`
-	// Partition only supported at enteprise consul.
+	// Partition only supported at enterprise consul.
 	// https://developer.hashicorp.com/consul/docs/enterprise/admin-partitions
 	Partition string `yaml:"partition,omitempty"`
 
@@ -43,7 +43,7 @@ type SDConfig struct {
 }
 
 // GetLabels returns Consul labels according to sdc.
-func (sdc *SDConfig) GetLabels(baseDir string) ([]*promutils.Labels, error) {
+func (sdc *SDConfig) GetLabels(baseDir string) ([]*promutil.Labels, error) {
 	cfg, err := getAPIConfig(sdc, baseDir)
 	if err != nil {
 		return nil, fmt.Errorf("cannot get API config: %w", err)

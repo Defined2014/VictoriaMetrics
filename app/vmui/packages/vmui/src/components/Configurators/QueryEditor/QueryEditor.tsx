@@ -1,14 +1,23 @@
 import React, { FC, useEffect, useRef, useState } from "preact/compat";
-import { KeyboardEvent } from "react";
 import { ErrorTypes } from "../../../types";
-import TextField from "../../Main/TextField/TextField";
-import QueryEditorAutocomplete from "./QueryEditorAutocomplete";
+import TextField, { TextFieldKeyboardEvent } from "../../Main/TextField/TextField";
 import "./style.scss";
 import { QueryStats } from "../../../api/types";
 import { partialWarning, seriesFetchedWarning } from "./warningText";
 import { AutocompleteOptions } from "../../Main/Autocomplete/Autocomplete";
 import useDeviceDetect from "../../../hooks/useDeviceDetect";
 import { useQueryState } from "../../../state/query/QueryStateContext";
+import debounce from "lodash.debounce";
+
+export interface QueryEditorAutocompleteProps {
+  value: string;
+  anchorEl: React.RefObject<HTMLInputElement>;
+  caretPosition: [number, number]; // [start, end]
+  hasHelperText: boolean;
+  includeFunctions: boolean;
+  onSelect: (val: string, caretPosition: number) => void;
+  onFoundOptions: (val: AutocompleteOptions[]) => void;
+}
 
 export interface QueryEditorProps {
   onChange: (query: string) => void;
@@ -18,10 +27,12 @@ export interface QueryEditorProps {
   value: string;
   oneLiner?: boolean;
   autocomplete: boolean;
+  autocompleteEl?: FC<QueryEditorAutocompleteProps>;
   error?: ErrorTypes | string;
   stats?: QueryStats;
   label: string;
   disabled?: boolean
+  includeFunctions?: boolean;
 }
 
 const QueryEditor: FC<QueryEditorProps> = ({
@@ -31,17 +42,23 @@ const QueryEditor: FC<QueryEditorProps> = ({
   onArrowUp,
   onArrowDown,
   autocomplete,
+  autocompleteEl: AutocompleteEl,
   error,
   stats,
   label,
-  disabled = false
+  disabled = false,
+  includeFunctions = true
 }) => {
   const { autocompleteQuick } = useQueryState();
   const { isMobile } = useDeviceDetect();
 
   const [openAutocomplete, setOpenAutocomplete] = useState(false);
-  const [caretPosition, setCaretPosition] = useState([0, 0]);
+  const [caretPositionAutocomplete, setCaretPositionAutocomplete] = useState<[number, number]>([0, 0]);
+  const [caretPositionInput, setCaretPositionInput] = useState<[number, number]>([0, 0]);
   const autocompleteAnchorEl = useRef<HTMLInputElement>(null);
+
+  const [showAutocomplete, setShowAutocomplete] = useState(false);
+  const debouncedSetShowAutocomplete = useRef(debounce(setShowAutocomplete, 500)).current;
 
   const warning = [
     {
@@ -58,11 +75,12 @@ const QueryEditor: FC<QueryEditorProps> = ({
     label = `${label} (${stats.executionTimeMsec || 0}ms)`;
   }
 
-  const handleSelect = (val: string) => {
+  const handleSelect = (val: string, caretPosition: number) => {
     onChange(val);
+    setCaretPositionInput([caretPosition, caretPosition]);
   };
 
-  const handleKeyDown = (e: KeyboardEvent) => {
+  const handleKeyDown = (e: TextFieldKeyboardEvent) => {
     const { key, ctrlKey, metaKey, shiftKey } = e;
 
     const value = (e.target as HTMLTextAreaElement).value || "";
@@ -100,13 +118,18 @@ const QueryEditor: FC<QueryEditorProps> = ({
     setOpenAutocomplete(!!val.length);
   };
 
-  const handleChangeCaret = (val: number[]) => {
-    setCaretPosition(val);
+  const handleChangeCaret = (val: [number, number]) => {
+    setCaretPositionAutocomplete(prev => prev[0] === val[0] && prev[1] === val[1] ? prev : val);
   };
 
   useEffect(() => {
-    setOpenAutocomplete(autocomplete);
+    setOpenAutocomplete(!!AutocompleteEl && autocompleteQuick);
   }, [autocompleteQuick]);
+
+  useEffect(() => {
+    setShowAutocomplete(false);
+    debouncedSetShowAutocomplete(caretPositionAutocomplete.every(Boolean));
+  }, [caretPositionAutocomplete]);
 
   return (
     <div
@@ -125,12 +148,15 @@ const QueryEditor: FC<QueryEditorProps> = ({
         onChangeCaret={handleChangeCaret}
         disabled={disabled}
         inputmode={"search"}
+        caretPosition={caretPositionInput}
       />
-      {autocomplete && (
-        <QueryEditorAutocomplete
+      {showAutocomplete && autocomplete && AutocompleteEl && (
+        <AutocompleteEl
           value={value}
           anchorEl={autocompleteAnchorEl}
-          caretPosition={caretPosition}
+          caretPosition={caretPositionAutocomplete}
+          hasHelperText={Boolean(warning || error)}
+          includeFunctions={includeFunctions}
           onSelect={handleSelect}
           onFoundOptions={handleChangeFoundOptions}
         />

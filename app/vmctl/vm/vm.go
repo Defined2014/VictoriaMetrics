@@ -16,7 +16,6 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmctl/barpool"
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmctl/limiter"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/decimal"
-	"github.com/cheggaaa/pb/v3"
 )
 
 // Config contains list of params to configure
@@ -26,6 +25,8 @@ type Config struct {
 	//   --httpListenAddr value for single node version
 	//   --httpListenAddr value of vmselect  component for cluster version
 	Addr string
+	// Transport allows specifying custom http.Transport
+	Transport *http.Transport
 	// Concurrency defines number of worker
 	// performing the import requests concurrently
 	Concurrency uint8
@@ -53,15 +54,16 @@ type Config struct {
 	// RateLimit defines a data transfer speed in bytes per second.
 	// Is applied to each worker (see Concurrency) independently.
 	RateLimit int64
-	// Whether to disable progress bar per VM worker
-	DisableProgressBar bool
+	// Backoff defines backoff policy for retries
+	Backoff *backoff.Backoff
 }
 
 // Importer performs insertion of timeseries
 // via VictoriaMetrics import protocol
-// see https://docs.victoriametrics.com/#how-to-import-time-series-data
+// see https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/#how-to-import-time-series-data
 type Importer struct {
 	addr       string
+	client     *http.Client
 	importPath string
 	compress   bool
 	user       string
@@ -116,11 +118,11 @@ func NewImporter(ctx context.Context, cfg Config) (*Importer, error) {
 
 	addr := strings.TrimRight(cfg.Addr, "/")
 	// if single version
-	// see https://docs.victoriametrics.com/#how-to-import-time-series-data
+	// see https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/#how-to-import-time-series-data
 	importPath := addr + "/api/v1/import"
 	if cfg.AccountID != "" {
 		// if cluster version
-		// see https://docs.victoriametrics.com/Cluster-VictoriaMetrics.html#url-format
+		// see https://docs.victoriametrics.com/victoriametrics/cluster-victoriametrics/#url-format
 		importPath = fmt.Sprintf("%s/insert/%s/prometheus/api/v1/import", addr, cfg.AccountID)
 	}
 	importPath, err := AddExtraLabelsToImportPath(importPath, cfg.ExtraLabels)
@@ -128,8 +130,14 @@ func NewImporter(ctx context.Context, cfg Config) (*Importer, error) {
 		return nil, err
 	}
 
+	client := &http.Client{}
+	if cfg.Transport != nil {
+		client.Transport = cfg.Transport
+	}
+
 	im := &Importer{
 		addr:       addr,
+		client:     client,
 		importPath: importPath,
 		compress:   cfg.Compress,
 		user:       cfg.User,
@@ -138,7 +146,7 @@ func NewImporter(ctx context.Context, cfg Config) (*Importer, error) {
 		close:      make(chan struct{}),
 		input:      make(chan *TimeSeries, cfg.Concurrency*4),
 		errors:     make(chan *ImportError, cfg.Concurrency),
-		backoff:    backoff.New(),
+		backoff:    cfg.Backoff,
 	}
 	if err := im.Ping(); err != nil {
 		return nil, fmt.Errorf("ping to %q failed: %s", addr, err)
@@ -150,12 +158,10 @@ func NewImporter(ctx context.Context, cfg Config) (*Importer, error) {
 
 	im.wg.Add(int(cfg.Concurrency))
 	for i := 0; i < int(cfg.Concurrency); i++ {
-		var bar *pb.ProgressBar
-		if !cfg.DisableProgressBar {
-			pbPrefix := fmt.Sprintf(`{{ green "VM worker %d:" }}`, i)
-			bar = barpool.AddWithTemplate(pbPrefix+pbTpl, 0)
-		}
-		go func(bar *pb.ProgressBar) {
+		pbPrefix := fmt.Sprintf(`{{ green "VM worker %d:" }}`, i)
+		bar := barpool.AddWithTemplate(pbPrefix+pbTpl, 0)
+
+		go func(bar barpool.Bar) {
 			defer im.wg.Done()
 			im.startWorker(ctx, bar, cfg.BatchSize, cfg.SignificantFigures, cfg.RoundDigits)
 		}(bar)
@@ -208,7 +214,7 @@ func (im *Importer) Close() {
 	})
 }
 
-func (im *Importer) startWorker(ctx context.Context, bar *pb.ProgressBar, batchSize, significantFigures, roundDigits int) {
+func (im *Importer) startWorker(ctx context.Context, bar barpool.Bar, batchSize, significantFigures, roundDigits int) {
 	var batch []*TimeSeries
 	var dataPoints int
 	var waitForBatch time.Time
@@ -243,9 +249,7 @@ func (im *Importer) startWorker(ctx context.Context, bar *pb.ProgressBar, batchS
 			batch = append(batch, ts)
 			dataPoints += len(ts.Values)
 
-			if bar != nil {
-				bar.Add(len(ts.Values))
-			}
+			bar.Add(len(ts.Values))
 
 			if dataPoints < batchSize {
 				continue
@@ -291,10 +295,12 @@ func (im *Importer) Ping() error {
 	if im.user != "" {
 		req.SetBasicAuth(im.user, im.password)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := im.client.Do(req)
 	if err != nil {
 		return err
 	}
+	defer resp.Body.Close()
+
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("bad status code: %d", resp.StatusCode)
 	}
@@ -321,7 +327,7 @@ func (im *Importer) Import(tsBatch []*TimeSeries) error {
 
 	errCh := make(chan error)
 	go func() {
-		errCh <- do(req)
+		errCh <- im.do(req)
 		close(errCh)
 	}()
 
@@ -375,8 +381,8 @@ func (im *Importer) Import(tsBatch []*TimeSeries) error {
 // ErrBadRequest represents bad request error.
 var ErrBadRequest = errors.New("bad request")
 
-func do(req *http.Request) error {
-	resp, err := http.DefaultClient.Do(req)
+func (im *Importer) do(req *http.Request) error {
+	resp, err := im.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("unexpected error when performing request: %s", err)
 	}

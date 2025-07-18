@@ -7,9 +7,8 @@ import (
 	"sync"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/bytesutil"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/cgroup"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/flagutil"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/protoparser/common"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/protoparser/protoparserutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/protoparser/vmimport"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/writeconcurrencylimiter"
 	"github.com/VictoriaMetrics/metrics"
@@ -23,20 +22,18 @@ var maxLineLen = flagutil.NewBytes("import.maxLineLen", 10*1024*1024, "The maxim
 // The callback can be called concurrently multiple times for streamed data from reader.
 //
 // callback shouldn't hold rows after returning.
-func Parse(r io.Reader, isGzipped bool, callback func(rows []vmimport.Row) error) error {
-	wcr := writeconcurrencylimiter.GetReader(r)
-	defer writeconcurrencylimiter.PutReader(wcr)
-	r = wcr
-
-	if isGzipped {
-		zr, err := common.GetGzipReader(r)
-		if err != nil {
-			return fmt.Errorf("cannot read gzipped vmimport data: %w", err)
-		}
-		defer common.PutGzipReader(zr)
-		r = zr
+func Parse(r io.Reader, encoding string, callback func(rows []vmimport.Row) error) error {
+	reader, err := protoparserutil.GetUncompressedReader(r, encoding)
+	if err != nil {
+		return fmt.Errorf("cannot decode vmimport data: %w", err)
 	}
-	ctx := getStreamContext(r)
+	defer protoparserutil.PutUncompressedReader(reader)
+
+	wcr := writeconcurrencylimiter.GetReader(reader)
+	defer writeconcurrencylimiter.PutReader(wcr)
+	reader = wcr
+
+	ctx := getStreamContext(reader)
 	defer putStreamContext(ctx)
 	for ctx.Read() {
 		uw := getUnmarshalWork()
@@ -44,7 +41,7 @@ func Parse(r io.Reader, isGzipped bool, callback func(rows []vmimport.Row) error
 		uw.callback = callback
 		uw.reqBuf, ctx.reqBuf = ctx.reqBuf, uw.reqBuf
 		ctx.wg.Add(1)
-		common.ScheduleUnmarshalWork(uw)
+		protoparserutil.ScheduleUnmarshalWork(uw)
 		wcr.DecConcurrency()
 	}
 	ctx.wg.Wait()
@@ -59,7 +56,7 @@ func (ctx *streamContext) Read() bool {
 	if ctx.err != nil || ctx.hasCallbackError() {
 		return false
 	}
-	ctx.reqBuf, ctx.tailBuf, ctx.err = common.ReadLinesBlockExt(ctx.br, ctx.reqBuf, ctx.tailBuf, maxLineLen.IntN())
+	ctx.reqBuf, ctx.tailBuf, ctx.err = protoparserutil.ReadLinesBlockExt(ctx.br, ctx.reqBuf, ctx.tailBuf, maxLineLen.IntN())
 	if ctx.err != nil {
 		if ctx.err != io.EOF {
 			readErrors.Inc()
@@ -110,33 +107,22 @@ func (ctx *streamContext) reset() {
 }
 
 func getStreamContext(r io.Reader) *streamContext {
-	select {
-	case ctx := <-streamContextPoolCh:
+	if v := streamContextPool.Get(); v != nil {
+		ctx := v.(*streamContext)
 		ctx.br.Reset(r)
 		return ctx
-	default:
-		if v := streamContextPool.Get(); v != nil {
-			ctx := v.(*streamContext)
-			ctx.br.Reset(r)
-			return ctx
-		}
-		return &streamContext{
-			br: bufio.NewReaderSize(r, 64*1024),
-		}
+	}
+	return &streamContext{
+		br: bufio.NewReaderSize(r, 64*1024),
 	}
 }
 
 func putStreamContext(ctx *streamContext) {
 	ctx.reset()
-	select {
-	case streamContextPoolCh <- ctx:
-	default:
-		streamContextPool.Put(ctx)
-	}
+	streamContextPool.Put(ctx)
 }
 
 var streamContextPool sync.Pool
-var streamContextPoolCh = make(chan *streamContext, cgroup.AvailableCPUs())
 
 type unmarshalWork struct {
 	rows     vmimport.Rows
@@ -164,7 +150,7 @@ func (uw *unmarshalWork) runCallback(rows []vmimport.Row) {
 	ctx.wg.Done()
 }
 
-// Unmarshal implements common.UnmarshalWork
+// Unmarshal implements proroparserutil.UnmarshalWork
 func (uw *unmarshalWork) Unmarshal() {
 	uw.rows.Unmarshal(bytesutil.ToUnsafeString(uw.reqBuf))
 	rows := uw.rows.Rows

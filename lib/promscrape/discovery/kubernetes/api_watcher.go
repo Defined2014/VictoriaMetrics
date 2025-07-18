@@ -20,9 +20,11 @@ import (
 	"github.com/VictoriaMetrics/metrics"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/cgroup"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/httputil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/netutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promauth"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promutils"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/timerpool"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/timeutil"
 )
@@ -30,7 +32,9 @@ import (
 var (
 	apiServerTimeout      = flag.Duration("promscrape.kubernetes.apiServerTimeout", 30*time.Minute, "How frequently to reload the full state from Kubernetes API server")
 	attachNodeMetadataAll = flag.Bool("promscrape.kubernetes.attachNodeMetadataAll", false, "Whether to set attach_metadata.node=true for all the kubernetes_sd_configs at -promscrape.config . "+
-		"It is possible to set attach_metadata.node=false individually per each kubernetes_sd_configs . See https://docs.victoriametrics.com/sd_configs.html#kubernetes_sd_configs")
+		"It is possible to set attach_metadata.node=false individually per each kubernetes_sd_configs . See https://docs.victoriametrics.com/victoriametrics/sd_configs/#kubernetes_sd_configs")
+	useHTTP2Client = flag.Bool("promscrape.kubernetes.useHTTP2Client", false, "Whether to use HTTP/2 client for connection to Kubernetes API server."+
+		" This may reduce amount of concurrent connections to API server when watching for a big number of Kubernetes objects.")
 )
 
 // WatchEvent is a watch event returned from API server endpoints if `watch=1` query arg is set.
@@ -46,7 +50,7 @@ type object interface {
 	key() string
 
 	// getTargetLabels must be called under gw.mu lock.
-	getTargetLabels(gw *groupWatcher) []*promutils.Labels
+	getTargetLabels(gw *groupWatcher) []*promutil.Labels
 }
 
 // parseObjectFunc must parse object from the given data.
@@ -65,7 +69,7 @@ type apiWatcher struct {
 	gw *groupWatcher
 
 	// swosByURLWatcher contains per-urlWatcher maps of ScrapeWork objects for the given apiWatcher
-	swosByURLWatcher     map[*urlWatcher]map[string][]interface{}
+	swosByURLWatcher     map[*urlWatcher]map[string][]any
 	swosByURLWatcherLock sync.Mutex
 
 	swosCount *metrics.Counter
@@ -88,16 +92,13 @@ func newAPIWatcher(apiServer string, ac *promauth.Config, sdc *SDConfig, swcFunc
 		attachNodeMetadata = sdc.AttachMetadata.Node
 	}
 	proxyURL := sdc.ProxyURL.GetURL()
-	gw, err := getGroupWatcher(apiServer, ac, namespaces, selectors, attachNodeMetadata, proxyURL)
-	if err != nil {
-		return nil, err
-	}
+	gw := getGroupWatcher(apiServer, ac, namespaces, selectors, attachNodeMetadata, proxyURL)
 	role := sdc.role()
 	aw := &apiWatcher{
 		role:             role,
 		swcFunc:          swcFunc,
 		gw:               gw,
-		swosByURLWatcher: make(map[*urlWatcher]map[string][]interface{}),
+		swosByURLWatcher: make(map[*urlWatcher]map[string][]any),
 		swosCount:        metrics.GetOrCreateCounter(fmt.Sprintf(`vm_promscrape_discovery_kubernetes_scrape_works{role=%q}`, role)),
 	}
 	return aw, nil
@@ -109,7 +110,7 @@ func (aw *apiWatcher) mustStart() {
 	aw.gw.apiWatcherInflightStartCalls.Add(-1)
 }
 
-func (aw *apiWatcher) updateSwosCount(multiplier int, swosByKey map[string][]interface{}) {
+func (aw *apiWatcher) updateSwosCount(multiplier int, swosByKey map[string][]any) {
 	n := 0
 	for _, swos := range swosByKey {
 		n += len(swos)
@@ -124,11 +125,11 @@ func (aw *apiWatcher) mustStop() {
 	for _, swosByKey := range aw.swosByURLWatcher {
 		aw.updateSwosCount(-1, swosByKey)
 	}
-	aw.swosByURLWatcher = make(map[*urlWatcher]map[string][]interface{})
+	aw.swosByURLWatcher = make(map[*urlWatcher]map[string][]any)
 	aw.swosByURLWatcherLock.Unlock()
 }
 
-func (aw *apiWatcher) replaceScrapeWorks(uw *urlWatcher, swosByKey map[string][]interface{}) {
+func (aw *apiWatcher) replaceScrapeWorks(uw *urlWatcher, swosByKey map[string][]any) {
 	aw.swosByURLWatcherLock.Lock()
 	aw.updateSwosCount(-1, aw.swosByURLWatcher[uw])
 	aw.updateSwosCount(1, swosByKey)
@@ -136,11 +137,11 @@ func (aw *apiWatcher) replaceScrapeWorks(uw *urlWatcher, swosByKey map[string][]
 	aw.swosByURLWatcherLock.Unlock()
 }
 
-func (aw *apiWatcher) updateScrapeWorks(uw *urlWatcher, swosByKey map[string][]interface{}) {
+func (aw *apiWatcher) updateScrapeWorks(uw *urlWatcher, swosByKey map[string][]any) {
 	aw.swosByURLWatcherLock.Lock()
 	dst := aw.swosByURLWatcher[uw]
 	if dst == nil {
-		dst = make(map[string][]interface{})
+		dst = make(map[string][]any)
 		aw.swosByURLWatcher[uw] = dst
 	}
 	for key, swos := range swosByKey {
@@ -154,12 +155,12 @@ func (aw *apiWatcher) updateScrapeWorks(uw *urlWatcher, swosByKey map[string][]i
 	aw.swosByURLWatcherLock.Unlock()
 }
 
-func (aw *apiWatcher) setScrapeWorks(uw *urlWatcher, key string, labelss []*promutils.Labels) {
+func (aw *apiWatcher) setScrapeWorks(uw *urlWatcher, key string, labelss []*promutil.Labels) {
 	swos := getScrapeWorkObjectsForLabels(aw.swcFunc, labelss)
 	aw.swosByURLWatcherLock.Lock()
 	swosByKey := aw.swosByURLWatcher[uw]
 	if swosByKey == nil {
-		swosByKey = make(map[string][]interface{})
+		swosByKey = make(map[string][]any)
 		aw.swosByURLWatcher[uw] = swosByKey
 	}
 	aw.swosCount.Add(len(swos) - len(swosByKey[key]))
@@ -181,9 +182,9 @@ func (aw *apiWatcher) removeScrapeWorks(uw *urlWatcher, key string) {
 	aw.swosByURLWatcherLock.Unlock()
 }
 
-func getScrapeWorkObjectsForLabels(swcFunc ScrapeWorkConstructorFunc, labelss []*promutils.Labels) []interface{} {
+func getScrapeWorkObjectsForLabels(swcFunc ScrapeWorkConstructorFunc, labelss []*promutil.Labels) []any {
 	// Do not pre-allocate swos, since it is likely the swos will be empty because of relabeling
-	var swos []interface{}
+	var swos []any
 	for _, labels := range labelss {
 		swo := swcFunc(labels)
 		// The reflect check is needed because of https://mangatmodi.medium.com/go-check-nil-interface-the-right-way-d142776edef1
@@ -195,10 +196,10 @@ func getScrapeWorkObjectsForLabels(swcFunc ScrapeWorkConstructorFunc, labelss []
 }
 
 // getScrapeWorkObjects returns all the ScrapeWork objects for the given aw.
-func (aw *apiWatcher) getScrapeWorkObjects() []interface{} {
+func (aw *apiWatcher) getScrapeWorkObjects() []any {
 	aw.gw.registerPendingAPIWatchers()
 
-	swos := make([]interface{}, 0, aw.swosCount.Get())
+	swos := make([]any, 0, aw.swosCount.Get())
 	aw.swosByURLWatcherLock.Lock()
 	for _, swosByKey := range aw.swosByURLWatcher {
 		for _, swosLocal := range swosByKey {
@@ -246,25 +247,49 @@ type groupWatcher struct {
 	noAPIWatchers bool
 }
 
-func newGroupWatcher(apiServer string, ac *promauth.Config, namespaces []string, selectors []Selector, attachNodeMetadata bool, proxyURL *url.URL) (*groupWatcher, error) {
-	var proxy func(*http.Request) (*url.URL, error)
-	if proxyURL != nil {
-		proxy = http.ProxyURL(proxyURL)
+var (
+	httpClientsCache = make(map[string]*http.Client)
+	httpClientsLock  sync.Mutex
+)
+
+func getHTTPClient(ac *promauth.Config, proxyURL *url.URL) *http.Client {
+	key := fmt.Sprintf("authConfig=%s, proxyURL=%s", ac.String(), proxyURL)
+	httpClientsLock.Lock()
+	if c, ok := httpClientsCache[key]; ok {
+		httpClientsLock.Unlock()
+		return c
 	}
-	tlsConfig, err := ac.NewTLSConfig()
-	if err != nil {
-		return nil, fmt.Errorf("cannot initialize tls config: %w", err)
+
+	tr := newHTTPTransport(*useHTTP2Client)
+	if !*useHTTP2Client {
+		// Proxy is not supported for http2 client.
+		// See https://github.com/golang/go/issues/26479
+		var proxy func(*http.Request) (*url.URL, error)
+		if proxyURL != nil {
+			proxy = http.ProxyURL(proxyURL)
+		}
+		tr.Proxy = proxy
 	}
-	client := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig:     tlsConfig,
-			Proxy:               proxy,
-			TLSHandshakeTimeout: 10 * time.Second,
-			IdleConnTimeout:     *apiServerTimeout,
-			MaxIdleConnsPerHost: 100,
-		},
-		Timeout: *apiServerTimeout,
+	c := &http.Client{
+		Transport: ac.NewRoundTripper(tr),
+		Timeout:   *apiServerTimeout,
 	}
+	httpClientsCache[key] = c
+	httpClientsLock.Unlock()
+	return c
+}
+
+func newHTTPTransport(enableHTTP2 bool) *http.Transport {
+	tr := httputil.NewTransport(enableHTTP2, "vm_promscrape_discovery_kubernetes")
+	tr.DialContext = netutil.Dialer.DialContext
+	tr.TLSHandshakeTimeout = 10 * time.Second
+	tr.IdleConnTimeout = *apiServerTimeout
+	tr.MaxIdleConnsPerHost = 100
+	return tr
+}
+
+func newGroupWatcher(apiServer string, ac *promauth.Config, namespaces []string, selectors []Selector, attachNodeMetadata bool, proxyURL *url.URL) *groupWatcher {
+	client := getHTTPClient(ac, proxyURL)
 	ctx, cancel := context.WithCancel(context.Background())
 	gw := &groupWatcher{
 		apiServer:          apiServer,
@@ -281,10 +306,10 @@ func newGroupWatcher(apiServer string, ac *promauth.Config, namespaces []string,
 		ctx:    ctx,
 		cancel: cancel,
 	}
-	return gw, nil
+	return gw
 }
 
-func getGroupWatcher(apiServer string, ac *promauth.Config, namespaces []string, selectors []Selector, attachNodeMetadata bool, proxyURL *url.URL) (*groupWatcher, error) {
+func getGroupWatcher(apiServer string, ac *promauth.Config, namespaces []string, selectors []Selector, attachNodeMetadata bool, proxyURL *url.URL) *groupWatcher {
 	proxyURLStr := "<nil>"
 	if proxyURL != nil {
 		proxyURLStr = proxyURL.String()
@@ -293,17 +318,12 @@ func getGroupWatcher(apiServer string, ac *promauth.Config, namespaces []string,
 		apiServer, namespaces, selectorsKey(selectors), attachNodeMetadata, proxyURLStr, ac.String())
 	groupWatchersLock.Lock()
 	gw := groupWatchers[key]
-	var err error
 	if gw == nil {
-		gw, err = newGroupWatcher(apiServer, ac, namespaces, selectors, attachNodeMetadata, proxyURL)
-		if err != nil {
-			err = fmt.Errorf("cannot initialize watcher for key={%s}: %w", key, err)
-		} else {
-			groupWatchers[key] = gw
-		}
+		gw = newGroupWatcher(apiServer, ac, namespaces, selectors, attachNodeMetadata, proxyURL)
+		groupWatchers[key] = gw
 	}
 	groupWatchersLock.Unlock()
-	return gw, err
+	return gw
 }
 
 func selectorsKey(selectors []Selector) string {
@@ -365,7 +385,7 @@ func groupWatchersCleaner() {
 
 type swosByKeyWithLock struct {
 	mu        sync.Mutex
-	swosByKey map[string][]interface{}
+	swosByKey map[string][]any
 }
 
 func (gw *groupWatcher) getScrapeWorkObjectsByAPIWatcherLocked(objectsByKey map[string]object, awsMap map[*apiWatcher]struct{}) map[*apiWatcher]*swosByKeyWithLock {
@@ -375,7 +395,7 @@ func (gw *groupWatcher) getScrapeWorkObjectsByAPIWatcherLocked(objectsByKey map[
 	swosByAPIWatcher := make(map[*apiWatcher]*swosByKeyWithLock, len(awsMap))
 	for aw := range awsMap {
 		swosByAPIWatcher[aw] = &swosByKeyWithLock{
-			swosByKey: make(map[string][]interface{}),
+			swosByKey: make(map[string][]any),
 		}
 	}
 
@@ -387,7 +407,7 @@ func (gw *groupWatcher) getScrapeWorkObjectsByAPIWatcherLocked(objectsByKey map[
 		labelss := o.getTargetLabels(gw)
 		wg.Add(1)
 		limiterCh <- struct{}{}
-		go func(key string, labelss []*promutils.Labels) {
+		go func(key string, labelss []*promutil.Labels) {
 			for aw, e := range swosByAPIWatcher {
 				swos := getScrapeWorkObjectsForLabels(aw.swcFunc, labelss)
 				e.mu.Lock()
@@ -403,9 +423,9 @@ func (gw *groupWatcher) getScrapeWorkObjectsByAPIWatcherLocked(objectsByKey map[
 	return swosByAPIWatcher
 }
 
-func putLabelssToPool(labelss []*promutils.Labels) {
+func putLabelssToPool(labelss []*promutil.Labels) {
 	for _, labels := range labelss {
-		promutils.PutLabels(labels)
+		promutil.PutLabels(labels)
 	}
 }
 
@@ -949,9 +969,12 @@ func (uw *urlWatcher) maybeUpdateDependedScrapeWorksLocked() {
 // Bookmark is a bookmark message from Kubernetes Watch API.
 // See https://kubernetes.io/docs/reference/using-api/api-concepts/#watch-bookmarks
 type Bookmark struct {
-	Metadata struct {
-		ResourceVersion string
-	}
+	Metadata BookmarkMetadata
+}
+
+// BookmarkMetadata is metadata for Bookmark
+type BookmarkMetadata struct {
+	ResourceVersion string
 }
 
 func parseBookmark(data []byte) (*Bookmark, error) {
@@ -1045,7 +1068,7 @@ func getObjectTypeByRole(role string) string {
 	case "ingress":
 		return "ingresses"
 	default:
-		logger.Panicf("BUG: unknonw role=%q", role)
+		logger.Panicf("BUG: unknown role=%q", role)
 		return ""
 	}
 }

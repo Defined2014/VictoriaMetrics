@@ -15,6 +15,8 @@ import useDeviceDetect from "../../../hooks/useDeviceDetect";
 import TextFieldMessage from "./TextFieldMessage";
 import "./style.scss";
 
+export type TextFieldKeyboardEvent = KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>;
+
 interface TextFieldProps {
   label?: string,
   value?: string | number
@@ -28,12 +30,13 @@ interface TextFieldProps {
   autofocus?: boolean
   helperText?: string
   inputmode?: "search" | "text" | "email" | "tel" | "url" | "none" | "numeric" | "decimal"
+  caretPosition?: [number, number]
   onChange?: (value: string) => void
   onEnter?: () => void
-  onKeyDown?: (e: KeyboardEvent) => void
+  onKeyDown?: (e: TextFieldKeyboardEvent) => void
   onFocus?: () => void
   onBlur?: () => void
-  onChangeCaret?: (position: number[]) => void
+  onChangeCaret?: (position: [number, number]) => void
 }
 
 const TextField: FC<TextFieldProps> = ({
@@ -49,6 +52,7 @@ const TextField: FC<TextFieldProps> = ({
   disabled = false,
   autofocus = false,
   inputmode = "text",
+  caretPosition,
   onChange,
   onEnter,
   onKeyDown,
@@ -73,6 +77,7 @@ const TextField: FC<TextFieldProps> = ({
   });
 
   const updateCaretPosition = (target: HTMLInputElement | HTMLTextAreaElement) => {
+    if (!onChangeCaret) return;
     const { selectionStart, selectionEnd } = target;
     onChangeCaret && onChangeCaret([selectionStart || 0, selectionEnd || 0]);
   };
@@ -81,7 +86,7 @@ const TextField: FC<TextFieldProps> = ({
     updateCaretPosition(e.currentTarget);
   };
 
-  const handleKeyDown = (e: KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+  const handleKeyDown = (e: TextFieldKeyboardEvent) => {
     onKeyDown && onKeyDown(e);
     const { key, ctrlKey, metaKey } = e;
     const isEnter = key === "Enter";
@@ -92,7 +97,7 @@ const TextField: FC<TextFieldProps> = ({
     }
   };
 
-  const handleKeyUp = (e: KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+  const handleKeyUp = (e: TextFieldKeyboardEvent) => {
     updateCaretPosition(e.currentTarget);
   };
 
@@ -102,11 +107,6 @@ const TextField: FC<TextFieldProps> = ({
     updateCaretPosition(e.currentTarget);
   };
 
-  useEffect(() => {
-    if (!autofocus || isMobile) return;
-    fieldRef?.current?.focus && fieldRef.current.focus();
-  }, [fieldRef, autofocus]);
-
   const handleFocus = () => {
     onFocus && onFocus();
   };
@@ -114,6 +114,23 @@ const TextField: FC<TextFieldProps> = ({
   const handleBlur = () => {
     onBlur && onBlur();
   };
+
+  const setSelectionRange = (range: [number, number]) => {
+    try {
+      fieldRef.current && fieldRef.current.setSelectionRange(range[0], range[1]);
+    }  catch (e) {
+      return e;
+    }
+  };
+
+  useEffect(() => {
+    if (!autofocus || isMobile) return;
+    fieldRef?.current?.focus && fieldRef.current.focus();
+  }, [fieldRef, autofocus]);
+
+  useEffect(() => {
+    caretPosition && setSelectionRange(caretPosition);
+  }, [caretPosition]);
 
   return <label
     className={classNames({

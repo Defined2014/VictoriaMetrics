@@ -9,7 +9,7 @@ const CATEGORY_TAG = "h3";
 const FUNCTION_TAG = "h4";
 const DESCRIPTION_TAG = "p";
 
-const docsUrl = "https://docs.victoriametrics.com/MetricsQL.html";
+const docsUrl = "https://docs.victoriametrics.com/victoriametrics/metricsql/";
 const classLink = "vm-link vm-link_colored";
 
 const prepareDescription = (text: string): string => {
@@ -48,18 +48,19 @@ const processGroups = (groups: NodeListOf<Element>): AutocompleteOptions[] => {
   }).filter(Boolean) as AutocompleteOptions[];
 };
 
-const useGetMetricsQL = () => {
+const useGetMetricsQL = (includeFunctions: boolean) => {
   const { metricsQLFunctions } = useQueryState();
   const queryDispatch = useQueryDispatch();
 
   const processMarkdown = (text: string) => {
     const div = document.createElement("div");
-    div.innerHTML = marked(text);
+    div.innerHTML = marked(text) as string;
     const groups = div.querySelectorAll(`${CATEGORY_TAG}, ${FUNCTION_TAG}`);
     return processGroups(groups);
   };
 
   useEffect(() => {
+    if (!includeFunctions || metricsQLFunctions.length) return;
     const fetchMarkdown = async () => {
       try {
         const resp = await fetch(MetricsQL);
@@ -70,12 +71,10 @@ const useGetMetricsQL = () => {
         console.error("Error fetching or processing the MetricsQL.md file:", e);
       }
     };
-
-    if (metricsQLFunctions.length) return;
     fetchMarkdown();
   }, []);
 
-  return metricsQLFunctions;
+  return includeFunctions ? metricsQLFunctions : [];
 };
 
 export default useGetMetricsQL;

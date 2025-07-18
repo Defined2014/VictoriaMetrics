@@ -1,26 +1,54 @@
+UID := "$(shell id -u)"
+PLATFORM := $(shell uname -m)
+DOCKER_PLATFORM := "linux/$(if $(findstring $(PLATFORM),arm64),arm64,amd64)"
+
 # These commands must be run from the VictoriaMetrics repository root
 
-# run local server for documentation website at http://127.0.0.1:4000/
-docs-up:
-	docker run --rm -it \
-		-e JEKYLL_GITHUB_TOKEN=blank \
-		-e PAGES_API_URL=http://0.0.0.0 \
-		-e PAGES_REPO_NWO=VictoriaMetrics/VictoriaMetrics \
-		-p 4000:4000 \
-		-v $(shell pwd)/docs:/srv/jekyll \
-		jekyll/jekyll:3.8 jekyll serve --livereload --incremental
+docs-image:
+	if [ ! -d vmdocs ]; then \
+		git clone --depth 1 git@github.com:VictoriaMetrics/vmdocs vmdocs; \
+	fi; \
+	cd vmdocs && \
+	git checkout main && \
+	git pull origin main && \
+	cd .. && \
+	docker build \
+		-t vmdocs-docker-package \
+		--build-arg UID=$(UID) \
+		--platform $(DOCKER_PLATFORM) \
+		vmdocs
+
+docs-debug: docs docs-image
+	docker run \
+		--rm \
+		--name vmdocs-docker-container \
+		--platform $(DOCKER_PLATFORM) \
+		-p 1313:1313 \
+		$(foreach dir,$(wildcard ./docs/$(dir)/*), -v ./docs/$(notdir $(dir)):/opt/docs/content/$(notdir $(dir))) \
+			vmdocs-docker-package
+
+docs-update-version: docs-image
+	$(if $(filter v%,$(PKG_TAG)), \
+		docker run \
+			--rm \
+			--entrypoint /usr/bin/find \
+			--platform $(DOCKER_PLATFORM) \
+			--name vmdocs-docker-container \
+			-v ./docs:/opt/docs/content/victoriametrics vmdocs-docker-package \
+				content \
+					-regex ".*\.md" \
+					-exec sed -i 's/{{% available_from "#" %}}/{{% available_from "$(PKG_TAG)" %}}/g' {} \;, \
+		$(info "Skipping docs version update, invalid $$PKG_TAG: $(PKG_TAG)"))
 
 # Converts images at docs folder to webp format
-# See https://docs.victoriametrics.com/Single-server-VictoriaMetrics.html#images-in-documentation
-docs-images-to-webp:
-	IMAGES_EXTENSION=jpg $(MAKE) docs-images-to-webp-by-extension
-	IMAGES_EXTENSION=jpeg $(MAKE) docs-images-to-webp-by-extension
-	IMAGES_EXTENSION=png $(MAKE) docs-images-to-webp-by-extension
-
-docs-images-to-webp-by-extension:
-	docker run --rm -it \
-		-v $(shell pwd)/docs:/docs \
-		elswork/cwebp \
-		sh -c 'find /docs/ -type f ! -path "/docs/operator/*" ! -path "/docs/_site/*" -name "*.$(IMAGES_EXTENSION)" -print0 | \
-			xargs -0 -P $(MAKE_CONCURRENCY) -I {} sh -c '"'"'cwebp -preset drawing -m 6 -o "$${1%.*}.webp" $$1'"'"' _ {}'
-	find docs/ -type f ! -path 'docs/operator/*' ! -path 'docs/_site/*' -name '*.$(IMAGES_EXTENSION)' -print0 | xargs -0 rm -f
+# See https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/#images-in-documentation
+docs-images-to-webp: docs-image
+	docker run \
+		--rm \
+		--platform $(DOCKER_PLATFORM) \
+		--entrypoint /usr/bin/find \
+		--name vmdocs-docker-container \
+		-v ./docs:/opt/docs/content/victoriametrics vmdocs-docker-package \
+			content \
+				-regex ".*\.\(png\|jpg\|jpeg\)" \
+				-exec sh -c 'cwebp -preset drawing -m 6 -o $$(echo {} | cut -f-1 -d.).webp {} && rm -rf {}' {} \;

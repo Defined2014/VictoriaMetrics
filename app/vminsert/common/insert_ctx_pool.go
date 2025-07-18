@@ -33,5 +33,7 @@ func PutInsertCtx(ctx *InsertCtx) {
 	}
 }
 
-var insertCtxPool sync.Pool
-var insertCtxPoolCh = make(chan *InsertCtx, cgroup.AvailableCPUs())
+var (
+	insertCtxPool   sync.Pool
+	insertCtxPoolCh = make(chan *InsertCtx, cgroup.AvailableCPUs())
+)

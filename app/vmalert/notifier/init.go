@@ -7,10 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmalert/templates"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/flagutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promauth"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promutils"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promutil"
 )
 
 var (
@@ -25,6 +24,9 @@ var (
 		"Enable this flag if you want vmalert to evaluate alerting rules without sending any notifications to external receivers (eg. alertmanager). "+
 		"-notifier.url, -notifier.config and -notifier.blackhole are mutually exclusive.")
 
+	headers = flagutil.NewArrayString("notifier.headers", "Optional HTTP headers to send with each request to the corresponding -notifier.url. "+
+		"For example, -remoteWrite.headers='My-Auth:foobar' would send 'My-Auth: foobar' HTTP header with every request to the corresponding -notifier.url. "+
+		"Multiple headers must be delimited by '^^': -notifier.headers='header1:value1^^header2:value2,header3:value3'")
 	basicAuthUsername     = flagutil.NewArrayString("notifier.basicAuth.username", "Optional basic auth username for -notifier.url")
 	basicAuthPassword     = flagutil.NewArrayString("notifier.basicAuth.password", "Optional basic auth password for -notifier.url")
 	basicAuthPasswordFile = flagutil.NewArrayString("notifier.basicAuth.passwordFile", "Optional path to basic auth password file for -notifier.url")
@@ -52,6 +54,7 @@ var (
 		"If multiple args are set, then they are applied independently for the corresponding -notifier.url")
 	oauth2Scopes = flagutil.NewArrayString("notifier.oauth2.scopes", "Optional OAuth2 scopes to use for -notifier.url. Scopes must be delimited by ';'. "+
 		"If multiple args are set, then they are applied independently for the corresponding -notifier.url")
+	sendTimeout = flagutil.NewArrayDuration("notifier.sendTimeout", 10*time.Second, "Timeout when sending alerts to the corresponding -notifier.url")
 )
 
 // cw holds a configWatcher for configPath configuration file
@@ -90,20 +93,18 @@ var (
 func Init(gen AlertURLGenerator, extLabels map[string]string, extURL string) (func() []Notifier, error) {
 	externalURL = extURL
 	externalLabels = extLabels
-	eu, err := url.Parse(externalURL)
+	_, err := url.Parse(externalURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse external URL: %w", err)
 	}
-
-	templates.UpdateWithFuncs(templates.FuncsWithExternalURL(eu))
 
 	if *blackHole {
 		if len(*addrs) > 0 || *configPath != "" {
 			return nil, fmt.Errorf("only one of -notifier.blackhole, -notifier.url and -notifier.config flags must be specified")
 		}
-
+		notifier := newBlackHoleNotifier()
 		staticNotifiersFn = func() []Notifier {
-			return []Notifier{newBlackHoleNotifier()}
+			return []Notifier{notifier}
 		}
 		return staticNotifiersFn, nil
 	}
@@ -171,10 +172,11 @@ func notifiersFromFlags(gen AlertURLGenerator) ([]Notifier, error) {
 				Scopes:           strings.Split(oauth2Scopes.GetOptionalArg(i), ";"),
 				TokenURL:         oauth2TokenURL.GetOptionalArg(i),
 			},
+			Headers: []string{headers.GetOptionalArg(i)},
 		}
 
 		addr = strings.TrimSuffix(addr, "/")
-		am, err := NewAlertManager(addr+alertManagerPath, gen, authCfg, nil, time.Second*10)
+		am, err := NewAlertManager(addr+alertManagerPath, gen, authCfg, nil, sendTimeout.GetOptionalArg(i))
 		if err != nil {
 			return nil, err
 		}
@@ -187,7 +189,7 @@ func notifiersFromFlags(gen AlertURLGenerator) ([]Notifier, error) {
 // list of labels added during discovery.
 type Target struct {
 	Notifier
-	Labels *promutils.Labels
+	Labels *promutil.Labels
 }
 
 // TargetType defines how the Target was discovered

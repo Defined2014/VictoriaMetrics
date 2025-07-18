@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promutils"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promutil"
 )
 
 // SDCheckInterval defines interval for targets refresh.
 var SDCheckInterval = flag.Duration("promscrape.gceSDCheckInterval", time.Minute, "Interval for checking for changes in gce. "+
 	"This works only if gce_sd_configs is configured in '-promscrape.config' file. "+
-	"See https://docs.victoriametrics.com/sd_configs.html#gce_sd_configs for details")
+	"See https://docs.victoriametrics.com/victoriametrics/sd_configs/#gce_sd_configs for details")
 
 // SDConfig represents service discovery config for gce.
 //
@@ -32,8 +32,8 @@ type ZoneYAML struct {
 }
 
 // UnmarshalYAML implements yaml.Unmarshaler
-func (z *ZoneYAML) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	var v interface{}
+func (z *ZoneYAML) UnmarshalYAML(unmarshal func(any) error) error {
+	var v any
 	if err := unmarshal(&v); err != nil {
 		return err
 	}
@@ -41,7 +41,7 @@ func (z *ZoneYAML) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	switch t := v.(type) {
 	case string:
 		zones = []string{t}
-	case []interface{}:
+	case []any:
 		for _, vv := range t {
 			zone, ok := vv.(string)
 			if !ok {
@@ -57,12 +57,12 @@ func (z *ZoneYAML) UnmarshalYAML(unmarshal func(interface{}) error) error {
 }
 
 // MarshalYAML implements yaml.Marshaler
-func (z ZoneYAML) MarshalYAML() (interface{}, error) {
+func (z ZoneYAML) MarshalYAML() (any, error) {
 	return z.Zones, nil
 }
 
 // GetLabels returns gce labels according to sdc.
-func (sdc *SDConfig) GetLabels(_ string) ([]*promutils.Labels, error) {
+func (sdc *SDConfig) GetLabels(_ string) ([]*promutil.Labels, error) {
 	cfg, err := getAPIConfig(sdc)
 	if err != nil {
 		return nil, fmt.Errorf("cannot get API config: %w", err)

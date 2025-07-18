@@ -5,11 +5,12 @@ import (
 	"log"
 	"sync"
 
+	"github.com/prometheus/prometheus/tsdb"
+	"github.com/prometheus/prometheus/tsdb/chunkenc"
+
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmctl/barpool"
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmctl/prometheus"
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmctl/vm"
-	"github.com/prometheus/prometheus/tsdb"
-	"github.com/prometheus/prometheus/tsdb/chunkenc"
 )
 
 type prometheusProcessor struct {
@@ -24,9 +25,12 @@ type prometheusProcessor struct {
 	// and defines number of concurrently
 	// running snapshot block readers
 	cc int
+
+	// isVerbose enables verbose output
+	isVerbose bool
 }
 
-func (pp *prometheusProcessor) run(silent, verbose bool) error {
+func (pp *prometheusProcessor) run() error {
 	blocks, err := pp.cl.Explore()
 	if err != nil {
 		return fmt.Errorf("explore failed: %s", err)
@@ -35,65 +39,16 @@ func (pp *prometheusProcessor) run(silent, verbose bool) error {
 		return fmt.Errorf("found no blocks to import")
 	}
 	question := fmt.Sprintf("Found %d blocks to import. Continue?", len(blocks))
-	if !silent && !prompt(question) {
+	if !prompt(question) {
 		return nil
 	}
 
-	bar := barpool.AddWithTemplate(fmt.Sprintf(barTpl, "Processing blocks"), len(blocks))
-
-	if err := barpool.Start(); err != nil {
-		return err
-	}
-	defer barpool.Stop()
-
-	blockReadersCh := make(chan tsdb.BlockReader)
-	errCh := make(chan error, pp.cc)
-	pp.im.ResetStats()
-
-	var wg sync.WaitGroup
-	wg.Add(pp.cc)
-	for i := 0; i < pp.cc; i++ {
-		go func() {
-			defer wg.Done()
-			for br := range blockReadersCh {
-				if err := pp.do(br); err != nil {
-					errCh <- fmt.Errorf("read failed for block %q: %s", br.Meta().ULID, err)
-					return
-				}
-				bar.Increment()
-			}
-		}()
-	}
-	// any error breaks the import
-	for _, br := range blocks {
-		select {
-		case promErr := <-errCh:
-			close(blockReadersCh)
-			return fmt.Errorf("prometheus error: %s", promErr)
-		case vmErr := <-pp.im.Errors():
-			close(blockReadersCh)
-			return fmt.Errorf("import process failed: %s", wrapErr(vmErr, verbose))
-		case blockReadersCh <- br:
-		}
-	}
-
-	close(blockReadersCh)
-	wg.Wait()
-	// wait for all buffers to flush
-	pp.im.Close()
-	close(errCh)
-	// drain import errors channel
-	for vmErr := range pp.im.Errors() {
-		if vmErr.Err != nil {
-			return fmt.Errorf("import process failed: %s", wrapErr(vmErr, verbose))
-		}
-	}
-	for err := range errCh {
-		return fmt.Errorf("import process failed: %s", err)
+	if err := pp.processBlocks(blocks); err != nil {
+		return fmt.Errorf("migration failed: %s", err)
 	}
 
 	log.Println("Import finished!")
-	log.Print(pp.im.Stats())
+	log.Println(pp.im.Stats())
 	return nil
 }
 
@@ -152,4 +107,60 @@ func (pp *prometheusProcessor) do(b tsdb.BlockReader) error {
 		}
 	}
 	return ss.Err()
+}
+
+func (pp *prometheusProcessor) processBlocks(blocks []tsdb.BlockReader) error {
+	bar := barpool.AddWithTemplate(fmt.Sprintf(barTpl, "Processing blocks"), len(blocks))
+	if err := barpool.Start(); err != nil {
+		return err
+	}
+	defer barpool.Stop()
+
+	blockReadersCh := make(chan tsdb.BlockReader)
+	errCh := make(chan error, pp.cc)
+	pp.im.ResetStats()
+
+	var wg sync.WaitGroup
+	wg.Add(pp.cc)
+	for i := 0; i < pp.cc; i++ {
+		go func() {
+			defer wg.Done()
+			for br := range blockReadersCh {
+				if err := pp.do(br); err != nil {
+					errCh <- fmt.Errorf("read failed for block %q: %s", br.Meta().ULID, err)
+					return
+				}
+				bar.Increment()
+			}
+		}()
+	}
+	// any error breaks the import
+	for _, br := range blocks {
+		select {
+		case promErr := <-errCh:
+			close(blockReadersCh)
+			return fmt.Errorf("prometheus error: %s", promErr)
+		case vmErr := <-pp.im.Errors():
+			close(blockReadersCh)
+			return fmt.Errorf("import process failed: %s", wrapErr(vmErr, pp.isVerbose))
+		case blockReadersCh <- br:
+		}
+	}
+
+	close(blockReadersCh)
+	wg.Wait()
+	// wait for all buffers to flush
+	pp.im.Close()
+	close(errCh)
+	// drain import errors channel
+	for vmErr := range pp.im.Errors() {
+		if vmErr.Err != nil {
+			return fmt.Errorf("import process failed: %s", wrapErr(vmErr, pp.isVerbose))
+		}
+	}
+	for err := range errCh {
+		return fmt.Errorf("import process failed: %s", err)
+	}
+
+	return nil
 }

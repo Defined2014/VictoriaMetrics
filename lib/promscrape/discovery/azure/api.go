@@ -14,10 +14,10 @@ import (
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promauth"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promscrape/discoveryutils"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promscrape/discoveryutil"
 )
 
-var configMap = discoveryutils.NewConfigMap()
+var configMap = discoveryutil.NewConfigMap()
 
 // Extract from the needed params from https://github.com/Azure/go-autorest/blob/7dd32b67be4e6c9386b9ba7b1c44a51263f05270/autorest/azure/environments.go#L61
 type cloudEnvironmentEndpoints struct {
@@ -56,7 +56,7 @@ var cloudEnvironments = map[string]*cloudEnvironmentEndpoints{
 
 // apiConfig contains config for API server.
 type apiConfig struct {
-	c              *discoveryutils.Client
+	c              *discoveryutil.Client
 	port           int
 	resourceGroup  string
 	subscriptionID string
@@ -67,12 +67,15 @@ type apiConfig struct {
 	tokenLock           sync.Mutex
 	token               string
 	tokenExpireDeadline time.Time
+
+	// apiServerHost is only used for verifying the `nextLink` in response of the list API.
+	apiServerHost string
 }
 
 type refreshTokenFunc func() (string, time.Duration, error)
 
 func getAPIConfig(sdc *SDConfig, baseDir string) (*apiConfig, error) {
-	v, err := configMap.Get(sdc, func() (interface{}, error) { return newAPIConfig(sdc, baseDir) })
+	v, err := configMap.Get(sdc, func() (any, error) { return newAPIConfig(sdc, baseDir) })
 	if err != nil {
 		return nil, err
 	}
@@ -110,12 +113,16 @@ func newAPIConfig(sdc *SDConfig, baseDir string) (*apiConfig, error) {
 	if err != nil {
 		return nil, err
 	}
-	c, err := discoveryutils.NewClient(env.ResourceManagerEndpoint, ac, sdc.ProxyURL, proxyAC, &sdc.HTTPClientConfig)
+	c, err := discoveryutil.NewClient(env.ResourceManagerEndpoint, ac, sdc.ProxyURL, proxyAC, &sdc.HTTPClientConfig)
 	if err != nil {
 		return nil, fmt.Errorf("cannot create client for %q: %w", env.ResourceManagerEndpoint, err)
 	}
+	// It's already verified in discoveryutil.NewClient so no need to check err.
+	u, _ := url.Parse(c.APIServer())
+
 	cfg := &apiConfig{
 		c:              c,
+		apiServerHost:  u.Hostname(),
 		port:           port,
 		resourceGroup:  sdc.ResourceGroup,
 		subscriptionID: sdc.SubscriptionID,
@@ -230,7 +237,7 @@ func getRefreshTokenFunc(sdc *SDConfig, ac, proxyAC *promauth.Config, env *cloud
 		return nil, fmt.Errorf("unsupported `authentication_method: %q` only `OAuth` and `ManagedIdentity` are supported", authenticationMethod)
 	}
 
-	authClient, err := discoveryutils.NewClient(tokenEndpoint, ac, sdc.ProxyURL, proxyAC, &sdc.HTTPClientConfig)
+	authClient, err := discoveryutil.NewClient(tokenEndpoint, ac, sdc.ProxyURL, proxyAC, &sdc.HTTPClientConfig)
 	if err != nil {
 		return nil, fmt.Errorf("cannot build auth client: %w", err)
 	}

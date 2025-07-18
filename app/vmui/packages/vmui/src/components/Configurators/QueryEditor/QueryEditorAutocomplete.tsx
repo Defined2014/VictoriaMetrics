@@ -1,39 +1,47 @@
-import React, { FC, Ref, useState, useEffect, useMemo } from "preact/compat";
-import Autocomplete, { AutocompleteOptions } from "../../Main/Autocomplete/Autocomplete";
+import React, { FC, useState, useEffect, useMemo, useCallback } from "preact/compat";
+import Autocomplete from "../../Main/Autocomplete/Autocomplete";
 import { useFetchQueryOptions } from "../../../hooks/useFetchQueryOptions";
-import { getTextWidth } from "../../../utils/uplot";
-import { escapeRegexp } from "../../../utils/regexp";
 import useGetMetricsQL from "../../../hooks/useGetMetricsQL";
 import { QueryContextType } from "../../../types";
 import { AUTOCOMPLETE_LIMITS } from "../../../constants/queryAutocomplete";
-
-interface QueryEditorAutocompleteProps {
-  value: string;
-  anchorEl: Ref<HTMLInputElement>;
-  caretPosition: number[];
-  onSelect: (val: string) => void;
-  onFoundOptions: (val: AutocompleteOptions[]) => void;
-}
+import { QueryEditorAutocompleteProps } from "./QueryEditor";
+import { getExprLastPart, getValueByContext, getContext } from "./autocompleteUtils";
 
 const QueryEditorAutocomplete: FC<QueryEditorAutocompleteProps> = ({
   value,
   anchorEl,
   caretPosition,
+  hasHelperText,
+  includeFunctions,
   onSelect,
   onFoundOptions
 }) => {
-  const [leftOffset, setLeftOffset] = useState(0);
-  const metricsqlFunctions = useGetMetricsQL();
+  const [offsetPos, setOffsetPos] = useState({ top: 0, left: 0 });
+  const metricsqlFunctions = useGetMetricsQL(includeFunctions);
 
-  const exprLastPart = useMemo(() => {
-    const parts = value.split("}");
-    return parts[parts.length - 1];
-  }, [value]);
+  const values = useMemo(() => {
+    if (caretPosition[0] !== caretPosition[1]) return { beforeCursor: value, afterCursor: "" };
+    const beforeCursor = value.substring(0, caretPosition[0]);
+    const afterCursor = value.substring(caretPosition[1]);
+    return { beforeCursor, afterCursor };
+  }, [value, caretPosition]);
+
+  const exprLastPart = useMemo(() => getExprLastPart(values.beforeCursor), [values]);
 
   const metric = useMemo(() => {
-    const regexp = /\b[^{}(),\s]+(?={|$)/g;
-    const match = exprLastPart.match(regexp);
-    return match ? match[0] : "";
+    const regex1 = /\w+\((?<metricName>[^)]+)\)\s+(by|without|on|ignoring)\s*\(\w*/gi;
+    const matchAlt = [...exprLastPart.matchAll(regex1)];
+    if (matchAlt.length > 0 && matchAlt[0].groups && matchAlt[0].groups.metricName) {
+      return matchAlt[0].groups.metricName;
+    }
+
+    const regex2 = /^\s*\b(?<metricName>[^{}(),\s]+)(?={|$)/g;
+    const match = [...exprLastPart.matchAll(regex2)];
+    if (match.length > 0 && match[0].groups && match[0].groups.metricName) {
+      return match[0].groups.metricName;
+    }
+
+    return "";
   }, [exprLastPart]);
 
   const label = useMemo(() => {
@@ -42,26 +50,9 @@ const QueryEditorAutocomplete: FC<QueryEditorAutocompleteProps> = ({
     return match ? match[match.length - 1] : "";
   }, [exprLastPart]);
 
-  const context = useMemo(() => {
-    if (!value || value.endsWith("}")) return QueryContextType.empty;
+  const context = useMemo(() => getContext(values.beforeCursor, metric, label), [values, metric, label]);
 
-    const labelRegexp = /\{[^}]*?(\w+)*$/gm;
-    const labelValueRegexp = new RegExp(`(${escapeRegexp(metric)})?{?.+${escapeRegexp(label)}(=|!=|=~|!~)"?([^"]*)$`, "g");
-
-    switch (true) {
-      case labelValueRegexp.test(value):
-        return QueryContextType.labelValue;
-      case labelRegexp.test(value):
-        return QueryContextType.label;
-      default:
-        return QueryContextType.metricsql;
-    }
-  }, [value, metric, label]);
-
-  const valueByContext = useMemo(() => {
-    const wordMatch = value.match(/([\w_\-.:/]+(?![},]))$/);
-    return wordMatch ? wordMatch[0] : "";
-  }, [value]);
+  const valueByContext = useMemo(() => getValueByContext(values.beforeCursor), [values.beforeCursor]);
 
   const { metrics, labels, labelValues, loading } = useFetchQueryOptions({
     valueByContext,
@@ -83,8 +74,10 @@ const QueryEditorAutocomplete: FC<QueryEditorAutocompleteProps> = ({
     }
   }, [context, metrics, labels, labelValues]);
 
-  const handleSelect = (insert: string) => {
+  const handleSelect = useCallback((insert: string) => {
     // Find the start and end of valueByContext in the query string
+    const value = values.beforeCursor;
+    let valueAfterCursor = values.afterCursor;
     const startIndexOfValueByContext = value.lastIndexOf(valueByContext, caretPosition[0]);
     const endIndexOfValueByContext = startIndexOfValueByContext + valueByContext.length;
 
@@ -95,27 +88,61 @@ const QueryEditorAutocomplete: FC<QueryEditorAutocompleteProps> = ({
     // Add quotes around the value if the context is labelValue
     if (context === QueryContextType.labelValue) {
       const quote = "\"";
-      const needsQuote = /(?:=|!=|=~|!~)$/.test(beforeValueByContext);
-      insert = `${needsQuote ? quote : ""}${insert}`;
+      valueAfterCursor = valueAfterCursor.replace(/^[^\s"|},]*/, "");
+      const needsOpenQuote = /(?:=|!=|=~|!~)$/.test(beforeValueByContext);
+      const needsCloseQuote = valueAfterCursor.trim()[0] !== "\"";
+      insert = `${needsOpenQuote ? quote : ""}${insert}${needsCloseQuote ? quote : ""}`;
     }
 
+    if (context === QueryContextType.label) {
+      valueAfterCursor = valueAfterCursor.replace(/^[^\s=!,{}()"|+\-/*^]*/, "");
+    }
+
+    if (context === QueryContextType.metricsql) {
+      valueAfterCursor = valueAfterCursor.replace(/^[^\s[\]{}()"|+\-/*^]*/, "");
+    }
     // Assemble the new value with the inserted text
-    const newVal = `${beforeValueByContext}${insert}${afterValueByContext}`;
-    onSelect(newVal);
-  };
+    const newVal = `${beforeValueByContext}${insert}${afterValueByContext}${valueAfterCursor}`;
+    onSelect(newVal, beforeValueByContext.length + insert.length);
+  }, [values]);
 
   useEffect(() => {
     if (!anchorEl.current) {
-      setLeftOffset(0);
+      setOffsetPos({ top: 0, left: 0 });
       return;
     }
 
-    const style = window.getComputedStyle(anchorEl.current);
+    const element = anchorEl.current.querySelector("textarea") || anchorEl.current;
+    const style = window.getComputedStyle(element);
     const fontSize = `${style.getPropertyValue("font-size")}`;
     const fontFamily = `${style.getPropertyValue("font-family")}`;
-    const offset = getTextWidth(value, `${fontSize} ${fontFamily}`);
-    setLeftOffset(offset);
-  }, [anchorEl, caretPosition]);
+    const lineHeight = parseInt(`${style.getPropertyValue("line-height")}`);
+
+    const span = document.createElement("div");
+    span.style.font = `${fontSize} ${fontFamily}`;
+    span.style.padding = style.getPropertyValue("padding");
+    span.style.lineHeight = `${lineHeight}px`;
+    span.style.width = `${element.offsetWidth}px`;
+    span.style.maxWidth = `${element.offsetWidth}px`;
+    span.style.whiteSpace = style.getPropertyValue("white-space");
+    span.style.overflowWrap = style.getPropertyValue("overflow-wrap");
+
+    const marker = document.createElement("span");
+    span.appendChild(document.createTextNode(values.beforeCursor));
+    span.appendChild(marker);
+    span.appendChild(document.createTextNode(values.afterCursor));
+    document.body.appendChild(span);
+
+    const spanRect = span.getBoundingClientRect();
+    const markerRect = marker.getBoundingClientRect();
+
+    const leftOffset = markerRect.left - spanRect.left;
+    const topOffset = markerRect.bottom - spanRect.bottom - (hasHelperText ? lineHeight : 0);
+    setOffsetPos({ top: topOffset, left: leftOffset });
+
+    span.remove();
+    marker.remove();
+  }, [anchorEl, caretPosition, hasHelperText]);
 
   return (
     <>
@@ -126,7 +153,7 @@ const QueryEditorAutocomplete: FC<QueryEditorAutocompleteProps> = ({
         options={options}
         anchor={anchorEl}
         minLength={0}
-        offset={{ top: 0, left: leftOffset }}
+        offset={offsetPos}
         onSelect={handleSelect}
         onFoundOptions={onFoundOptions}
         maxDisplayResults={{

@@ -25,6 +25,8 @@ import useDeviceDetect from "../../../hooks/useDeviceDetect";
 import useElementSize from "../../../hooks/useElementSize";
 import { ChartTooltipProps } from "../../Chart/ChartTooltip/ChartTooltip";
 import LegendAnomaly from "../../Chart/Line/LegendAnomaly/LegendAnomaly";
+import { groupByMultipleKeys } from "../../../utils/array";
+import { useGraphDispatch } from "../../../state/graph/GraphStateContext";
 
 export interface GraphViewProps {
   data?: MetricResult[];
@@ -40,7 +42,8 @@ export interface GraphViewProps {
   fullWidth?: boolean;
   height?: number;
   isHistogram?: boolean;
-  anomalyView?: boolean;
+  isAnomalyView?: boolean;
+  isPredefinedPanel?: boolean;
   spanGaps?: boolean;
 }
 
@@ -58,9 +61,12 @@ const GraphView: FC<GraphViewProps> = ({
   fullWidth = true,
   height,
   isHistogram,
-  anomalyView,
+  isAnomalyView,
+  isPredefinedPanel,
   spanGaps
 }) => {
+  const graphDispatch = useGraphDispatch();
+
   const { isMobile } = useDeviceDetect();
   const { timezone } = useTimeState();
   const currentStep = useMemo(() => customStep || period.step || "1s", [period.step, customStep]);
@@ -74,8 +80,8 @@ const GraphView: FC<GraphViewProps> = ({
   const [legendValue, setLegendValue] = useState<ChartTooltipProps | null>(null);
 
   const getSeriesItem = useMemo(() => {
-    return getSeriesItemContext(data, hideSeries, alias, anomalyView);
-  }, [data, hideSeries, alias, anomalyView]);
+    return getSeriesItemContext(data, hideSeries, alias, isAnomalyView);
+  }, [data, hideSeries, alias, isAnomalyView]);
 
   const setLimitsYaxis = (values: { [key: string]: number[] }) => {
     const limits = getLimitsYAxis(values, !isHistogram);
@@ -83,7 +89,7 @@ const GraphView: FC<GraphViewProps> = ({
   };
 
   const onChangeLegend = (legend: LegendItemType, metaKey: boolean) => {
-    setHideSeries(getHideSeries({ hideSeries, legend, metaKey, series }));
+    setHideSeries(getHideSeries({ hideSeries, legend, metaKey, series, isAnomalyView }));
   };
 
   const prepareHistogramData = (data: (number | null)[][]) => {
@@ -106,6 +112,20 @@ const GraphView: FC<GraphViewProps> = ({
     const ys = new Array(xs.length).fill(0).map((n, i) => i % (values.length));
 
     return [null, [xs, ys, counts]];
+  };
+
+  const prepareAnomalyLegend = (legend: LegendItemType[]): LegendItemType[] => {
+    if (!isAnomalyView) return legend;
+
+    // For vmanomaly: Only select the first series per group (due to API specs) and clear __name__ in freeFormFields.
+    const grouped = groupByMultipleKeys(legend, ["group", "label"]);
+    return grouped.map((group) => {
+      const firstEl = group.values[0];
+      return {
+        ...firstEl,
+        freeFormFields: { ...firstEl.freeFormFields, __name__: "" }
+      };
+    });
   };
 
   useEffect(() => {
@@ -153,15 +173,19 @@ const GraphView: FC<GraphViewProps> = ({
       const range = getMinMaxBuffer(getMinFromArray(resultAsNumber), getMaxFromArray(resultAsNumber));
       const rangeStep = Math.abs(range[1] - range[0]);
 
-      return (avg > rangeStep * 1e10) && !anomalyView ? results.map(() => avg) : results;
+      return (avg > rangeStep * 1e10) && !isAnomalyView ? results.map(() => avg) : results;
     });
     timeDataSeries.unshift(timeSeries);
     setLimitsYaxis(tempValues);
     const result = isHistogram ? prepareHistogramData(timeDataSeries) : timeDataSeries;
     setDataChart(result as uPlotData);
     setSeries(tempSeries);
-    setLegend(tempLegend);
-  }, [data, timezone, isHistogram]);
+    const legend = prepareAnomalyLegend(tempLegend);
+    setLegend(legend);
+    if (isAnomalyView) {
+      setHideSeries(legend.map(s => s.label || "").slice(1));
+    }
+  }, [data, timezone, isHistogram, currentStep]);
 
   useEffect(() => {
     const tempLegend: LegendItemType[] = [];
@@ -172,10 +196,30 @@ const GraphView: FC<GraphViewProps> = ({
       tempLegend.push(getLegendItem(seriesItem, d.group));
     });
     setSeries(tempSeries);
-    setLegend(tempLegend);
+    setLegend(prepareAnomalyLegend(tempLegend));
   }, [hideSeries]);
 
   const [containerRef, containerSize] = useElementSize();
+
+  const hasTimeData = dataChart[0]?.length > 0;
+
+  useEffect(() => {
+    const checkEmptyHistogram = () => {
+      if (!isHistogram || !data[1]) {
+        return false;
+      }
+
+      try {
+        const values = (dataChart?.[1]?.[2] || []) as (number | null)[];
+        return values.every(v => v === null);
+      } catch (e) {
+        return false;
+      }
+    };
+
+    const isEmpty = checkEmptyHistogram();
+    graphDispatch({ type: "SET_IS_EMPTY_HISTOGRAM", payload: isEmpty });
+  }, [dataChart, isHistogram]);
 
   return (
     <div
@@ -186,7 +230,7 @@ const GraphView: FC<GraphViewProps> = ({
       })}
       ref={containerRef}
     >
-      {!isHistogram && (
+      {!isHistogram && hasTimeData && (
         <LineChart
           data={dataChart}
           series={series}
@@ -197,7 +241,7 @@ const GraphView: FC<GraphViewProps> = ({
           setPeriod={setPeriod}
           layoutSize={containerSize}
           height={height}
-          anomalyView={anomalyView}
+          isAnomalyView={isAnomalyView}
           spanGaps={spanGaps}
         />
       )}
@@ -213,24 +257,21 @@ const GraphView: FC<GraphViewProps> = ({
           onChangeLegend={setLegendValue}
         />
       )}
-      {!isHistogram && !anomalyView && showLegend && (
+      {isAnomalyView && showLegend && (<LegendAnomaly series={series as SeriesItem[]}/>)}
+      {!isHistogram && showLegend && (
         <Legend
           labels={legend}
           query={query}
+          isAnomalyView={isAnomalyView}
           onChange={onChangeLegend}
+          isPredefinedPanel={isPredefinedPanel}
         />
       )}
       {isHistogram && showLegend && (
         <LegendHeatmap
-          series={series as SeriesItem[]}
           min={yaxis.limits.range[1][0] || 0}
           max={yaxis.limits.range[1][1] || 0}
           legendValue={legendValue}
-        />
-      )}
-      {anomalyView && showLegend && (
-        <LegendAnomaly
-          series={series as SeriesItem[]}
         />
       )}
     </div>

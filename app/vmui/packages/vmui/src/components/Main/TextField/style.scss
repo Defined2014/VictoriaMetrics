@@ -9,7 +9,7 @@
   &_textarea:after {
     content: attr(data-replicated-value) " ";
     white-space: pre-wrap;
-    word-wrap: break-word;
+    overflow-wrap: break-word;
     visibility: hidden;
   }
 
@@ -149,7 +149,7 @@
     max-width: 15px;
     top: 0;
     left: $padding-small;
-    height: 40px;
+    height: 36px;
     position: absolute;
     color: $color-text-secondary;
   }

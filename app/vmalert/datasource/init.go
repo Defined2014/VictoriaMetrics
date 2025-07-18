@@ -7,16 +7,18 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmalert/utils"
+	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmalert/vmalertutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/auth"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/flagutil"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/httputils"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/httputil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promauth"
 )
 
 var (
-	addr = flag.String("datasource.url", "", "Datasource compatible with Prometheus HTTP API. It can be single node VictoriaMetrics or vmselect URL. Required parameter. "+
-		"E.g. http://127.0.0.1:8428 . See also -remoteRead.disablePathAppend and -datasource.showURL")
+	addr = flag.String("datasource.url", "", "Datasource compatible with Prometheus HTTP API. It can be single node VictoriaMetrics or vmselect endpoint. Required parameter. "+
+		"Supports address in the form of IP address with a port (e.g., http://127.0.0.1:8428) or DNS SRV record. "+
+		"See also -remoteRead.disablePathAppend and -datasource.showURL")
 	appendTypePrefix  = flag.Bool("datasource.appendTypePrefix", false, "Whether to add type prefix to -datasource.url based on the query type. Set to true if sending different query types to the vmselect URL.")
 	showDatasourceURL = flag.Bool("datasource.showURL", false, "Whether to avoid stripping sensitive information such as auth headers or passwords from URLs in log messages or UI and exported metrics. "+
 		"It is hidden by default, since it can contain sensitive info such as auth key")
@@ -46,21 +48,16 @@ var (
 	oauth2TokenURL = flag.String("datasource.oauth2.tokenUrl", "", "Optional OAuth2 tokenURL to use for -datasource.url")
 	oauth2Scopes   = flag.String("datasource.oauth2.scopes", "", "Optional OAuth2 scopes to use for -datasource.url. Scopes must be delimited by ';'")
 
-	lookBack = flag.Duration("datasource.lookback", 0, `Will be deprecated soon, please adjust "-search.latencyOffset"  at datasource side `+
-		`or specify "latency_offset" in rule group's params. Lookback defines how far into the past to look when evaluating queries. `+
-		`For example, if the datasource.lookback=5m then param "time" with value now()-5m will be added to every query.`)
-	queryStep = flag.Duration("datasource.queryStep", 5*time.Minute, "How far a value can fallback to when evaluating queries. "+
+	queryStep = flag.Duration("datasource.queryStep", 5*time.Minute, "How far a value can fallback to when evaluating queries to the configured -datasource.url and -remoteRead.url. Only valid for prometheus datasource. "+
 		"For example, if -datasource.queryStep=15s then param \"step\" with value \"15s\" will be added to every query. "+
 		"If set to 0, rule's evaluation interval will be used instead.")
-	queryTimeAlignment = flag.Bool("datasource.queryTimeAlignment", true, `Deprecated: please use "eval_alignment" in rule group instead. `+
-		`Whether to align "time" parameter with evaluation interval. `+
-		"Alignment supposed to produce deterministic results despite number of vmalert replicas or time they were started. "+
-		"See more details at https://github.com/VictoriaMetrics/VictoriaMetrics/pull/1257")
-	maxIdleConnections = flag.Int("datasource.maxIdleConnections", 100, `Defines the number of idle (keep-alive connections) to each configured datasource. Consider setting this value equal to the value: groups_total * group.concurrency. Too low a value may result in a high number of sockets in TIME_WAIT state.`)
-	disableKeepAlive   = flag.Bool("datasource.disableKeepAlive", false, `Whether to disable long-lived connections to the datasource. `+
-		`If true, disables HTTP keep-alives and will only use the connection to the server for a single HTTP request.`)
-	roundDigits = flag.Int("datasource.roundDigits", 0, `Adds "round_digits" GET param to datasource requests. `+
-		`In VM "round_digits" limits the number of digits after the decimal point in response values.`)
+	maxIdleConnections    = flag.Int("datasource.maxIdleConnections", 100, `Defines the number of idle (keep-alive connections) to each configured datasource. Consider setting this value equal to the value: groups_total * group.concurrency. Too low a value may result in a high number of sockets in TIME_WAIT state.`)
+	idleConnectionTimeout = flag.Duration("datasource.idleConnTimeout", 50*time.Second, `Defines a duration for idle (keep-alive connections) to exist. Consider setting this value less than "-http.idleConnTimeout". It must prevent possible "write: broken pipe" and "read: connection reset by peer" errors.`)
+	disableKeepAlive      = flag.Bool("datasource.disableKeepAlive", false, `Whether to disable long-lived connections to the datasource. `+
+		`If true, disables HTTP keep-alive and will only use the connection to the server for a single HTTP request.`)
+	roundDigits = flag.Int("datasource.roundDigits", 0, `Adds "round_digits" GET param to datasource requests which limits the number of digits after the decimal point in response values. `+
+		`Only valid for VictoriaMetrics as the datasource.`)
+
 	Suffix           string
 	BaseURL          string
 	DefaultAuthToken *auth.Token
@@ -87,33 +84,28 @@ type Param struct {
 // Provided extraParams will be added as GET params for
 // each request.
 func Init(extraParams url.Values) (QuerierBuilder, error) {
-	if *addr == "" {
-		return nil, fmt.Errorf("datasource.url is empty")
-	}
-	if !*queryTimeAlignment {
-		logger.Warnf("flag `-datasource.queryTimeAlignment` is deprecated and will be removed in next releases. Please use `eval_alignment` in rule group instead.")
-	}
-	if *lookBack != 0 {
-		logger.Warnf("flag `-datasource.lookback` will be deprecated soon. Please use `-rule.evalDelay` command-line flag instead. See https://github.com/VictoriaMetrics/VictoriaMetrics/issues/5155 for details.")
+	if err := httputil.CheckURL(*addr); err != nil {
+		return nil, fmt.Errorf("invalid -datasource.url: %w", err)
 	}
 
 	var err error
-	BaseURL, Suffix, DefaultAuthToken, err = utils.ParseURL(*addr)
+	BaseURL, Suffix, DefaultAuthToken, err = vmalertutil.ParseURL(*addr)
 	if err != nil {
 		return nil, fmt.Errorf("wrong format of datasource.url: %v", *addr)
 	} else {
 		logger.Infof("DEBUG BaseURL = %s, Suffix = %s, DefaultAuthToken = [%d:%d]", BaseURL, Suffix, DefaultAuthToken.AccountID, DefaultAuthToken.ProjectID)
 	}
 
-	tr, err := httputils.Transport(*addr, *tlsCertFile, *tlsKeyFile, *tlsCAFile, *tlsServerName, *tlsInsecureSkipVerify)
+	tr, err := promauth.NewTLSTransport(*tlsCertFile, *tlsKeyFile, *tlsCAFile, *tlsServerName, *tlsInsecureSkipVerify, "vmalert_datasource")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create transport: %w", err)
+		return nil, fmt.Errorf("failed to create transport for -datasource.url=%q: %w", *addr, err)
 	}
 	tr.DisableKeepAlives = *disableKeepAlive
 	tr.MaxIdleConnsPerHost = *maxIdleConnections
 	if tr.MaxIdleConns != 0 && tr.MaxIdleConns < tr.MaxIdleConnsPerHost {
 		tr.MaxIdleConns = tr.MaxIdleConnsPerHost
 	}
+	tr.IdleConnTimeout = *idleConnectionTimeout
 
 	if extraParams == nil {
 		extraParams = url.Values{}
@@ -126,11 +118,11 @@ func Init(extraParams url.Values) (QuerierBuilder, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cannot parse JSON for -datasource.oauth2.endpointParams=%s: %w", *oauth2EndpointParams, err)
 	}
-	authCfg, err := utils.AuthConfig(
-		utils.WithBasicAuth(*basicAuthUsername, *basicAuthPassword, *basicAuthPasswordFile),
-		utils.WithBearer(*bearerToken, *bearerTokenFile),
-		utils.WithOAuth(*oauth2ClientID, *oauth2ClientSecret, *oauth2ClientSecretFile, *oauth2TokenURL, *oauth2Scopes, endpointParams),
-		utils.WithHeaders(*headers))
+	authCfg, err := vmalertutil.AuthConfig(
+		vmalertutil.WithBasicAuth(*basicAuthUsername, *basicAuthPassword, *basicAuthPasswordFile),
+		vmalertutil.WithBearer(*bearerToken, *bearerTokenFile),
+		vmalertutil.WithOAuth(*oauth2ClientID, *oauth2ClientSecret, *oauth2ClientSecretFile, *oauth2TokenURL, *oauth2Scopes, endpointParams),
+		vmalertutil.WithHeaders(*headers))
 	if err != nil {
 		return nil, fmt.Errorf("failed to configure auth: %w", err)
 	}
@@ -139,15 +131,13 @@ func Init(extraParams url.Values) (QuerierBuilder, error) {
 		return nil, fmt.Errorf("failed to set request auth header to datasource %q: %w", *addr, err)
 	}
 
-	return &VMStorage{
+	return &Client{
 		c:                &http.Client{Transport: tr},
 		authCfg:          authCfg,
 		baseURL:          BaseURL,
 		suffix:           Suffix,
 		appendTypePrefix: *appendTypePrefix,
-		lookBack:         *lookBack,
 		queryStep:        *queryStep,
-		dataSourceType:   datasourcePrometheus,
 		extraParams:      extraParams,
 	}, nil
 }

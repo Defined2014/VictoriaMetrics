@@ -1,8 +1,10 @@
 package main
 
 import (
+	"net/http"
 	"net/url"
 	"path"
+	"slices"
 	"strings"
 )
 
@@ -49,11 +51,22 @@ func dropPrefixParts(path string, parts int) string {
 	return path
 }
 
-func (ui *UserInfo) getURLPrefixAndHeaders(u *url.URL) (*URLPrefix, HeadersConf) {
+func (ui *UserInfo) getURLPrefixAndHeaders(u *url.URL, host string, h http.Header) (*URLPrefix, HeadersConf) {
 	for _, e := range ui.URLMaps {
-		if matchAnyRegex(e.SrcHosts, u.Host) && matchAnyRegex(e.SrcPaths, u.Path) {
-			return e.URLPrefix, e.HeadersConf
+		if !matchAnyRegex(e.SrcHosts, host) {
+			continue
 		}
+		if !matchAnyRegex(e.SrcPaths, u.Path) {
+			continue
+		}
+		if !matchAnyQueryArg(e.SrcQueryArgs, u.Query()) {
+			continue
+		}
+		if !matchAnyHeader(e.SrcHeaders, h) {
+			continue
+		}
+
+		return e.URLPrefix, e.HeadersConf
 	}
 	if ui.URLPrefix != nil {
 		return ui.URLPrefix, ui.HeadersConf
@@ -73,10 +86,43 @@ func matchAnyRegex(rs []*Regex, s string) bool {
 	return false
 }
 
+func matchAnyQueryArg(qas []*QueryArg, args url.Values) bool {
+	if len(qas) == 0 {
+		return true
+	}
+	for _, qa := range qas {
+		vs, ok := args[qa.Name]
+		if !ok {
+			continue
+		}
+		for _, v := range vs {
+			if qa.Value.match(v) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func matchAnyHeader(headers []*Header, h http.Header) bool {
+	if len(headers) == 0 {
+		return true
+	}
+	for _, header := range headers {
+		if slices.Contains(h.Values(header.Name), header.Value) {
+			return true
+		}
+	}
+	return false
+}
+
 func normalizeURL(uOrig *url.URL) *url.URL {
 	u := *uOrig
 	// Prevent from attacks with using `..` in r.URL.Path
 	u.Path = path.Clean(u.Path)
+	if u.Path == "." {
+		u.Path = "/"
+	}
 	if !strings.HasSuffix(u.Path, "/") && strings.HasSuffix(uOrig.Path, "/") {
 		// The path.Clean() removes trailing slash.
 		// Return it back if needed.

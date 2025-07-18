@@ -6,11 +6,10 @@ import (
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vminsert/common"
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vminsert/relabel"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/cgroup"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/prompbmarshal"
-	parserCommon "github.com/VictoriaMetrics/VictoriaMetrics/lib/protoparser/common"
-	parser "github.com/VictoriaMetrics/VictoriaMetrics/lib/protoparser/vmimport"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/protoparser/protoparserutil"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/protoparser/vmimport"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/protoparser/vmimport/stream"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/storage"
 	"github.com/VictoriaMetrics/metrics"
@@ -25,17 +24,17 @@ var (
 //
 // See https://github.com/VictoriaMetrics/VictoriaMetrics/issues/6
 func InsertHandler(req *http.Request) error {
-	extraLabels, err := parserCommon.GetExtraLabels(req)
+	extraLabels, err := protoparserutil.GetExtraLabels(req)
 	if err != nil {
 		return err
 	}
-	isGzipped := req.Header.Get("Content-Encoding") == "gzip"
-	return stream.Parse(req.Body, isGzipped, func(rows []parser.Row) error {
+	encoding := req.Header.Get("Content-Encoding")
+	return stream.Parse(req.Body, encoding, func(rows []vmimport.Row) error {
 		return insertRows(rows, extraLabels)
 	})
 }
 
-func insertRows(rows []parser.Row, extraLabels []prompbmarshal.Label) error {
+func insertRows(rows []vmimport.Row, extraLabels []prompbmarshal.Label) error {
 	ctx := getPushCtx()
 	defer putPushCtx(ctx)
 
@@ -59,14 +58,9 @@ func insertRows(rows []parser.Row, extraLabels []prompbmarshal.Label) error {
 			label := &extraLabels[j]
 			ic.AddLabel(label.Name, label.Value)
 		}
-		if hasRelabeling {
-			ic.ApplyRelabeling()
-		}
-		if len(ic.Labels) == 0 {
-			// Skip metric without labels.
+		if !ic.TryPrepareLabels(hasRelabeling) {
 			continue
 		}
-		ic.SortLabelsIfNeeded()
 		ctx.metricNameBuf = storage.MarshalMetricNameRaw(ctx.metricNameBuf[:0], ic.Labels)
 		values := r.Values
 		timestamps := r.Timestamps
@@ -96,25 +90,15 @@ func (ctx *pushCtx) reset() {
 }
 
 func getPushCtx() *pushCtx {
-	select {
-	case ctx := <-pushCtxPoolCh:
-		return ctx
-	default:
-		if v := pushCtxPool.Get(); v != nil {
-			return v.(*pushCtx)
-		}
-		return &pushCtx{}
+	if v := pushCtxPool.Get(); v != nil {
+		return v.(*pushCtx)
 	}
+	return &pushCtx{}
 }
 
 func putPushCtx(ctx *pushCtx) {
 	ctx.reset()
-	select {
-	case pushCtxPoolCh <- ctx:
-	default:
-		pushCtxPool.Put(ctx)
-	}
+	pushCtxPool.Put(ctx)
 }
 
 var pushCtxPool sync.Pool
-var pushCtxPoolCh = make(chan *pushCtx, cgroup.AvailableCPUs())

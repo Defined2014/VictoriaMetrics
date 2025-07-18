@@ -6,17 +6,19 @@ import (
 	"path"
 	"strconv"
 
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promscrape/discoveryutils"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promutils"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promscrape/discoveryutil"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promutil"
 )
 
 // See https://docs.openstack.org/api-ref/compute/#list-hypervisors-details
 type hypervisorDetail struct {
-	Hypervisors []hypervisor `json:"hypervisors"`
-	Links       []struct {
-		HREF string `json:"href"`
-		Rel  string `json:"rel,omitempty"`
-	} `json:"hypervisors_links,omitempty"`
+	Hypervisors []hypervisor     `json:"hypervisors"`
+	Links       []hypervisorLink `json:"hypervisors_links,omitempty"`
+}
+
+type hypervisorLink struct {
+	HREF string `json:"href"`
+	Rel  string `json:"rel,omitempty"`
 }
 
 type hypervisor struct {
@@ -62,11 +64,11 @@ func (cfg *apiConfig) getHypervisors() ([]hypervisor, error) {
 	}
 }
 
-func addHypervisorLabels(hvs []hypervisor, port int) []*promutils.Labels {
-	var ms []*promutils.Labels
+func addHypervisorLabels(hvs []hypervisor, port int) []*promutil.Labels {
+	var ms []*promutil.Labels
 	for _, hv := range hvs {
-		addr := discoveryutils.JoinHostPort(hv.HostIP, port)
-		m := promutils.NewLabels(8)
+		addr := discoveryutil.JoinHostPort(hv.HostIP, port)
+		m := promutil.NewLabels(8)
 		m.Add("__address__", addr)
 		m.Add("__meta_openstack_hypervisor_type", hv.Type)
 		m.Add("__meta_openstack_hypervisor_status", hv.Status)
@@ -79,7 +81,7 @@ func addHypervisorLabels(hvs []hypervisor, port int) []*promutils.Labels {
 	return ms
 }
 
-func getHypervisorLabels(cfg *apiConfig) ([]*promutils.Labels, error) {
+func getHypervisorLabels(cfg *apiConfig) ([]*promutil.Labels, error) {
 	hvs, err := cfg.getHypervisors()
 	if err != nil {
 		return nil, fmt.Errorf("cannot get hypervisors: %w", err)

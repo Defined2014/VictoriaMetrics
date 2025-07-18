@@ -20,6 +20,16 @@ const (
 	paramRuleID = "rule_id"
 )
 
+type apiNotifier struct {
+	Kind    string       `json:"kind"`
+	Targets []*apiTarget `json:"targets"`
+}
+
+type apiTarget struct {
+	Address string            `json:"address"`
+	Labels  map[string]string `json:"labels"`
+}
+
 // apiAlert represents a notifier.AlertingRule state
 // for WEB view
 // https://github.com/prometheus/compliance/blob/main/alert_generator/specification.md#get-apiv1rules
@@ -100,6 +110,13 @@ type apiGroup struct {
 	EvalDelay float64 `json:"eval_delay,omitempty"`
 
 	AuthToken *APIAuthToken `json:"auth_token"`
+
+	// Unhealthy unhealthy rules count
+	Unhealthy int
+	// Healthy passing rules count
+	Healthy int
+	// NoMatch not matching rules count
+	NoMatch int
 }
 
 type APIAuthToken struct {
@@ -109,7 +126,7 @@ type APIAuthToken struct {
 
 // groupAlerts represents a group of alerts for WEB view
 type groupAlerts struct {
-	Group  apiGroup
+	Group  *apiGroup
 	Alerts []*apiAlert
 }
 
@@ -190,7 +207,7 @@ func (ar apiRule) WebLink() string {
 		paramGroupID, ar.GroupID, paramRuleID, ar.ID)
 }
 
-func ruleToAPI(r interface{}) apiRule {
+func ruleToAPI(r any) apiRule {
 	if ar, ok := r.(*rule.AlertingRule); ok {
 		return alertingToAPI(ar)
 	}
@@ -222,8 +239,10 @@ func recordingToAPI(rr *rule.RecordingRule) apiRule {
 		Updates:           rule.GetAllRuleState(rr),
 
 		// encode as strings to avoid rounding
-		ID:      fmt.Sprintf("%d", rr.ID()),
-		GroupID: fmt.Sprintf("%d", rr.GroupID),
+		ID:        fmt.Sprintf("%d", rr.ID()),
+		GroupID:   fmt.Sprintf("%d", rr.GroupID),
+		GroupName: rr.GroupName,
+		File:      rr.File,
 	}
 	if lastState.Err != nil {
 		r.LastError = lastState.Err.Error()
@@ -326,12 +345,11 @@ func newAlertAPI(ar *rule.AlertingRule, a *notifier.Alert) *apiAlert {
 	return aa
 }
 
-func groupToAPI(g *rule.Group) apiGroup {
+func groupToAPI(g *rule.Group) *apiGroup {
 	g = g.DeepCopy()
 	ag := apiGroup{
 		// encode as string to avoid rounding
-		ID: fmt.Sprintf("%d", g.ID()),
-
+		ID:              strconv.FormatUint(g.GetID(), 10),
 		Name:            g.Name,
 		Type:            g.Type.String(),
 		File:            g.File,
@@ -341,8 +359,7 @@ func groupToAPI(g *rule.Group) apiGroup {
 		Params:          urlValuesToStrings(g.Params),
 		Headers:         headersToStrings(g.Headers),
 		NotifierHeaders: headersToStrings(g.NotifierHeaders),
-
-		Labels: g.Labels,
+		Labels:          g.Labels,
 	}
 	if g.EvalOffset != nil {
 		ag.EvalOffset = g.EvalOffset.Seconds()
@@ -354,7 +371,7 @@ func groupToAPI(g *rule.Group) apiGroup {
 	for _, r := range g.Rules {
 		ag.Rules = append(ag.Rules, ruleToAPI(r))
 	}
-	return ag
+	return &ag
 }
 
 func urlValuesToStrings(values url.Values) []string {

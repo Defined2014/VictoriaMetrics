@@ -14,6 +14,8 @@ import Popper from "../../Main/Popper/Popper";
 import useDeviceDetect from "../../../hooks/useDeviceDetect";
 import classNames from "classnames";
 import useBoolean from "../../../hooks/useBoolean";
+import { useCustomPanelState } from "../../../state/customPanel/CustomPanelStateContext";
+import Hyperlink from "../../Main/Hyperlink/Hyperlink";
 
 const StepConfigurator: FC = () => {
   const appModeEnable = getAppModeEnable();
@@ -22,20 +24,24 @@ const StepConfigurator: FC = () => {
   const { customStep: value, isHistogram } = useGraphState();
   const { period: { step, end, start } } = useTimeState();
   const graphDispatch = useGraphDispatch();
+  const { displayType } = useCustomPanelState();
 
   const prevDuration = usePrevious(end - start);
 
   const defaultStep = useMemo(() => {
-    return getStepFromDuration(end - start, isHistogram);
-  }, [step, isHistogram]);
+    return getStepFromDuration(end - start, isHistogram, displayType);
+  }, [end, start, isHistogram, displayType]);
+  const prevDefaultStep = usePrevious(defaultStep);
 
   const [customStep, setCustomStep] = useState(value || defaultStep);
   const [error, setError] = useState("");
 
+  const isAutoStep = value === defaultStep;
+
   const {
     value: openOptions,
     toggle: toggleOpenOptions,
-    setFalse: handleCloseOptions,
+    setFalse: setCloseOptions,
   } = useBoolean(false);
 
   const buttonRef = useRef<HTMLDivElement>(null);
@@ -47,6 +53,11 @@ const StepConfigurator: FC = () => {
     graphDispatch({ type: "SET_CUSTOM_STEP", payload: stepDur });
     setCustomStep(stepDur);
     setError("");
+  };
+
+  const handleCloseOptions = () => {
+    handleApply();
+    setCloseOptions();
   };
 
   const handleFocus = () => {
@@ -96,15 +107,15 @@ const StepConfigurator: FC = () => {
 
   useEffect(() => {
     const dur = end - start;
-    if (dur === prevDuration || !prevDuration) return;
+    if (dur === prevDuration || !prevDuration || value !== prevDefaultStep) return;
     if (defaultStep) {
       handleApply(defaultStep);
     }
-  }, [end, start, prevDuration, defaultStep]);
+  }, [prevDuration, defaultStep]);
 
   useEffect(() => {
     if (step === value || step === defaultStep) handleApply(defaultStep);
-  }, [isHistogram]);
+  }, [isHistogram, displayType]);
 
   return (
     <div
@@ -124,22 +135,15 @@ const StepConfigurator: FC = () => {
           <span className="vm-mobile-option__arrow"><ArrowDownIcon/></span>
         </div>
       ) : (
-        <Tooltip title="Query resolution step width">
-          <Button
-            className={appModeEnable ? "" : "vm-header-button"}
-            variant="contained"
-            color="primary"
-            startIcon={<TimelineIcon/>}
-            onClick={toggleOpenOptions}
-          >
-            <p>
-              STEP
-              <p className="vm-step-control__value">
-                {customStep}
-              </p>
-            </p>
-          </Button>
-        </Tooltip>
+        <Button
+          className={appModeEnable ? "" : "vm-header-button"}
+          variant="contained"
+          color="primary"
+          startIcon={<TimelineIcon/>}
+          onClick={toggleOpenOptions}
+        >
+            Step: {isAutoStep ? `auto (${customStep})` : customStep}
+        </Button>
       )}
       <Popper
         open={openOptions}
@@ -164,7 +168,7 @@ const StepConfigurator: FC = () => {
             onFocus={handleFocus}
             onBlur={handleApply}
             endIcon={(
-              <Tooltip title={`Set default step value: ${defaultStep}`}>
+              <Tooltip title={`Reset to auto step (${defaultStep})`}>
                 <Button
                   size="small"
                   variant="text"
@@ -177,25 +181,23 @@ const StepConfigurator: FC = () => {
             )}
           />
           <div className="vm-step-control-popper-info">
-            <code>step</code> - the <a
-              className="vm-link vm-link_colored"
-              href="https://prometheus.io/docs/prometheus/latest/querying/basics/#time-durations"
-              target="_blank"
-              rel="noreferrer"
-            >
-            interval
-            </a>
-            between datapoints, which must be returned from the range query.
-            The <code>query</code> is executed at
-            <code>start</code>, <code>start+step</code>, <code>start+2*step</code>, …, <code>end</code> timestamps.
-            <a
-              className="vm-link vm-link_colored"
-              href="https://docs.victoriametrics.com/keyConcepts.html#range-query"
-              target="_blank"
-              rel="help noreferrer"
-            >
-              Read more about Range query
-            </a>
+            <p>
+              <code>step</code> - the <Hyperlink
+                href="https://prometheus.io/docs/prometheus/latest/querying/basics/#time-durations"
+                text="interval"
+              /> between datapoints, which must be returned from the range query.
+              The <code>query</code> is executed
+              at <code>start</code>, <code>start+step</code>, <code>start+2*step</code>, …, <code>end</code> timestamps.
+            </p>
+            <p>
+              Read more about <Hyperlink
+                href="https://docs.victoriametrics.com/victoriametrics/keyconcepts/#range-query"
+                text="Range"
+              /> and <Hyperlink
+                href="https://docs.victoriametrics.com/victoriametrics/keyconcepts/#instant-query"
+                text="Instant"
+              /> queries.
+            </p>
           </div>
         </div>
       </Popper>

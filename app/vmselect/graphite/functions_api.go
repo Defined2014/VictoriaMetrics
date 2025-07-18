@@ -7,16 +7,16 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/httputils"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/httputil"
 )
 
 // FunctionsHandler implements /functions handler.
 //
 // See https://graphite.readthedocs.io/en/latest/functions.html#function-api
 func FunctionsHandler(w http.ResponseWriter, r *http.Request) error {
-	grouped := httputils.GetBool(r, "grouped")
+	grouped := httputil.GetBool(r, "grouped")
 	group := r.FormValue("group")
-	result := make(map[string]interface{})
+	result := make(map[string]any)
 	for funcName, fi := range funcs {
 		if group != "" && fi.Group != group {
 			continue
@@ -47,7 +47,7 @@ func FunctionDetailsHandler(funcName string, w http.ResponseWriter, r *http.Requ
 	return writeJSON(result, w, r)
 }
 
-func writeJSON(result interface{}, w http.ResponseWriter, r *http.Request) error {
+func writeJSON(result any, w http.ResponseWriter, r *http.Request) error {
 	data, err := json.Marshal(result)
 	if err != nil {
 		return fmt.Errorf("cannot marshal response to JSON: %w", err)

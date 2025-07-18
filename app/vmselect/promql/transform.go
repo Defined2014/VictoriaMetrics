@@ -13,7 +13,7 @@ import (
 
 	"github.com/VictoriaMetrics/metricsql"
 
-	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmselect/searchutils"
+	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmselect/searchutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/bytesutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/decimal"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
@@ -244,7 +244,7 @@ func getAbsentTimeseries(ec *EvalConfig, arg metricsql.Expr) []*timeseries {
 	if !ok {
 		return rvs
 	}
-	tfss := searchutils.ToTagFilterss(me.LabelFilterss)
+	tfss := searchutil.ToTagFilterss(me.LabelFilterss)
 	if len(tfss) != 1 {
 		return rvs
 	}
@@ -918,7 +918,7 @@ func transformHistogramQuantile(tfa *transformFuncArg) ([]*timeseries, error) {
 	m := groupLeTimeseries(tss)
 
 	// Calculate quantile for each group in m
-	lastNonInf := func(i int, xss []leTimeseries) float64 {
+	lastNonInf := func(_ int, xss []leTimeseries) float64 {
 		for len(xss) > 0 {
 			xsLast := xss[len(xss)-1]
 			if !math.IsInf(xsLast.le, 0) {
@@ -1044,29 +1044,18 @@ func fixBrokenBuckets(i int, xss []leTimeseries) {
 	// Buckets are already sorted by le, so their values must be in ascending order,
 	// since the next bucket includes all the previous buckets.
 	// If the next bucket has lower value than the current bucket,
-	// then the current bucket must be substituted with the next bucket value.
-	// See https://github.com/VictoriaMetrics/VictoriaMetrics/issues/2819
+	// then the next bucket must be substituted with the current bucket value.
+	// See https://github.com/VictoriaMetrics/VictoriaMetrics/issues/4580#issuecomment-2186659102
 	if len(xss) < 2 {
 		return
 	}
-	// Fill NaN in upper buckets with the first non-NaN value found in lower buckets.
-	for j := len(xss) - 1; j >= 0; j-- {
+
+	// Substitute upper bucket values with lower bucket values if the upper values are NaN
+	// or are bigger than the lower bucket values.
+	vNext := xss[0].ts.Values[i]
+	for j := 1; j < len(xss); j++ {
 		v := xss[j].ts.Values[i]
-		if !math.IsNaN(v) {
-			j++
-			for j < len(xss) {
-				xss[j].ts.Values[i] = v
-				j++
-			}
-			break
-		}
-	}
-	// Substitute lower bucket values with upper values if the lower values are NaN
-	// or are bigger than the upper bucket values.
-	vNext := xss[len(xss)-1].ts.Values[i]
-	for j := len(xss) - 2; j >= 0; j-- {
-		v := xss[j].ts.Values[i]
-		if math.IsNaN(v) || v > vNext {
+		if math.IsNaN(v) || vNext > v {
 			xss[j].ts.Values[i] = vNext
 		} else {
 			vNext = v
@@ -1555,10 +1544,8 @@ func transformRangeFirst(tfa *transformFuncArg) ([]*timeseries, error) {
 			continue
 		}
 		vFirst := values[0]
-		for i, v := range values {
-			if math.IsNaN(v) {
-				continue
-			}
+		values = ts.Values
+		for i := range values {
 			values[i] = vFirst
 		}
 	}
@@ -1582,10 +1569,8 @@ func setLastValues(tss []*timeseries) {
 			continue
 		}
 		vLast := values[len(values)-1]
-		for i, v := range values {
-			if math.IsNaN(v) {
-				continue
-			}
+		values = ts.Values
+		for i := range values {
 			values[i] = vLast
 		}
 	}
@@ -1658,6 +1643,16 @@ func transformUnion(tfa *transformFuncArg) ([]*timeseries, error) {
 		return evalNumber(tfa.ec, nan), nil
 	}
 
+	if areAllArgsScalar(args) {
+		// Special case for (v1,...,vN) where vX are scalars - return all the scalars as time series.
+		// This is needed for "q == (v1,...,vN)" and "q != (v1,...,vN)" cases, where vX are numeric constants.
+		rvs := make([]*timeseries, len(args))
+		for i, arg := range args {
+			rvs[i] = arg[0]
+		}
+		return rvs, nil
+	}
+
 	rvs := make([]*timeseries, 0, len(args[0]))
 	m := make(map[string]bool, len(args[0]))
 	bb := bbPool.Get()
@@ -1674,6 +1669,15 @@ func transformUnion(tfa *transformFuncArg) ([]*timeseries, error) {
 	}
 	bbPool.Put(bb)
 	return rvs, nil
+}
+
+func areAllArgsScalar(args [][]*timeseries) bool {
+	for _, arg := range args {
+		if !isScalar(arg) {
+			return false
+		}
+	}
+	return true
 }
 
 func transformLabelKeep(tfa *transformFuncArg) ([]*timeseries, error) {

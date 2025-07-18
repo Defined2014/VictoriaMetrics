@@ -16,20 +16,20 @@ import (
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/bytesutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promscrape/discoveryutils"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promutils"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promscrape/discoveryutil"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promutil"
 	"github.com/VictoriaMetrics/metrics"
 )
 
-var configMap = discoveryutils.NewConfigMap()
+var configMap = discoveryutil.NewConfigMap()
 
 type apiConfig struct {
-	client   *discoveryutils.Client
+	client   *discoveryutil.Client
 	clientID string
 	apiPath  string
 
 	// labels contains the latest discovered labels.
-	labels atomic.Pointer[[]*promutils.Labels]
+	labels atomic.Pointer[[]*promutil.Labels]
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -42,7 +42,7 @@ type apiConfig struct {
 }
 
 func getAPIConfig(sdc *SDConfig, baseDir string) (*apiConfig, error) {
-	v, err := configMap.Get(sdc, func() (interface{}, error) { return newAPIConfig(sdc, baseDir) })
+	v, err := configMap.Get(sdc, func() (any, error) { return newAPIConfig(sdc, baseDir) })
 	if err != nil {
 		return nil, err
 	}
@@ -62,7 +62,7 @@ func newAPIConfig(sdc *SDConfig, baseDir string) (*apiConfig, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cannot parse proxy auth config: %w", err)
 	}
-	client, err := discoveryutils.NewClient(apiServer, ac, sdc.ProxyURL, proxyAC, &sdc.HTTPClientConfig)
+	client, err := discoveryutil.NewClient(apiServer, ac, sdc.ProxyURL, proxyAC, &sdc.HTTPClientConfig)
 	if err != nil {
 		return nil, fmt.Errorf("cannot create HTTP client for %q: %w", apiServer, err)
 	}
@@ -199,7 +199,7 @@ func (cfg *apiConfig) updateTargetsLabels(ctx context.Context) error {
 	return nil
 }
 
-func parseTargetsLabels(data []byte) ([]*promutils.Labels, string, string, error) {
+func parseTargetsLabels(data []byte) ([]*promutil.Labels, string, string, error) {
 	var dResp discoveryResponse
 	if err := json.Unmarshal(data, &dResp); err != nil {
 		return nil, "", "", err
@@ -207,11 +207,11 @@ func parseTargetsLabels(data []byte) ([]*promutils.Labels, string, string, error
 	return dResp.getTargetsLabels(), dResp.VersionInfo, dResp.Nonce, nil
 }
 
-func (dr *discoveryResponse) getTargetsLabels() []*promutils.Labels {
-	var ms []*promutils.Labels
+func (dr *discoveryResponse) getTargetsLabels() []*promutil.Labels {
+	var ms []*promutil.Labels
 	for _, r := range dr.Resources {
 		for _, t := range r.Targets {
-			m := promutils.NewLabels(8 + len(r.Labels) + len(t.Labels))
+			m := promutil.NewLabels(8 + len(r.Labels) + len(t.Labels))
 
 			m.Add("instance", t.Name)
 			m.Add("__address__", t.Address)
@@ -232,12 +232,12 @@ func (dr *discoveryResponse) getTargetsLabels() []*promutils.Labels {
 	return ms
 }
 
-func addLabels(dst *promutils.Labels, src map[string]string) {
+func addLabels(dst *promutil.Labels, src map[string]string) {
 	bb := bbPool.Get()
 	b := bb.B
 	for k, v := range src {
 		b = append(b[:0], "__meta_kuma_label_"...)
-		b = append(b, discoveryutils.SanitizeLabelName(k)...)
+		b = append(b, discoveryutil.SanitizeLabelName(k)...)
 		labelName := bytesutil.InternBytes(b)
 		dst.Add(labelName, v)
 	}
@@ -264,18 +264,22 @@ type discoveryRequestNode struct {
 // discoveryResponse represent xDS-requests for Kuma Service Mesh
 // https://www.envoyproxy.io/docs/envoy/latest/api-v3/service/discovery/v3/discovery.proto#envoy-v3-api-msg-service-discovery-v3-discoveryresponse
 type discoveryResponse struct {
-	VersionInfo string `json:"version_info"`
-	Resources   []struct {
-		Mesh    string `json:"mesh"`
-		Service string `json:"service"`
-		Targets []struct {
-			Name        string            `json:"name"`
-			Scheme      string            `json:"scheme"`
-			Address     string            `json:"address"`
-			MetricsPath string            `json:"metrics_path"`
-			Labels      map[string]string `json:"labels"`
-		} `json:"targets"`
-		Labels map[string]string `json:"labels"`
-	} `json:"resources"`
-	Nonce string `json:"nonce"`
+	VersionInfo string     `json:"version_info"`
+	Resources   []resource `json:"resources"`
+	Nonce       string     `json:"nonce"`
+}
+
+type resource struct {
+	Mesh    string            `json:"mesh"`
+	Service string            `json:"service"`
+	Targets []target          `json:"targets"`
+	Labels  map[string]string `json:"labels"`
+}
+
+type target struct {
+	Name        string            `json:"name"`
+	Scheme      string            `json:"scheme"`
+	Address     string            `json:"address"`
+	MetricsPath string            `json:"metrics_path"`
+	Labels      map[string]string `json:"labels"`
 }

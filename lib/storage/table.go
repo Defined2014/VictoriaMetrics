@@ -8,11 +8,20 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/cgroup"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/fasttime"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/fs"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/timeutil"
+	"github.com/valyala/fastrand"
 )
+
+var finalDedupScheduleInterval = time.Hour
+
+// SetFinalDedupScheduleInterval configures the interval for checking when the final deduplication process should start.
+func SetFinalDedupScheduleInterval(d time.Duration) {
+	finalDedupScheduleInterval = d
+}
 
 // table represents a single table with time series data.
 type table struct {
@@ -25,10 +34,12 @@ type table struct {
 	ptws     []*partitionWrapper
 	ptwsLock sync.Mutex
 
-	stop chan struct{}
+	stopCh chan struct{}
 
-	retentionWatcherWG  sync.WaitGroup
-	finalDedupWatcherWG sync.WaitGroup
+	retentionWatcherWG sync.WaitGroup
+	forceMergeWG       sync.WaitGroup
+
+	historicalMergeWatcherWG sync.WaitGroup
 }
 
 // partitionWrapper provides refcounting mechanism for the partition.
@@ -107,13 +118,13 @@ func mustOpenTable(path string, s *Storage) *table {
 		bigPartitionsPath:   bigPartitionsPath,
 		s:                   s,
 
-		stop: make(chan struct{}),
+		stopCh: make(chan struct{}),
 	}
 	for _, pt := range pts {
 		tb.addPartitionNolock(pt)
 	}
 	tb.startRetentionWatcher()
-	tb.startFinalDedupWatcher()
+	tb.startHistoricalMergeWatcher()
 	return tb
 }
 
@@ -163,11 +174,15 @@ func (tb *table) addPartitionNolock(pt *partition) {
 }
 
 // MustClose closes the table.
-// It is expected that all the pending searches on the table are finished before calling MustClose.
+//
+// This func must be called only when there are no goroutines using the the
+// table, such as ones that ingest or retrieve time series samples or index
+// data.
 func (tb *table) MustClose() {
-	close(tb.stop)
+	close(tb.stopCh)
 	tb.retentionWatcherWG.Wait()
-	tb.finalDedupWatcherWG.Wait()
+	tb.historicalMergeWatcherWG.Wait()
+	tb.forceMergeWG.Wait()
 
 	tb.ptwsLock.Lock()
 	ptws := tb.ptws
@@ -242,13 +257,17 @@ func (tb *table) UpdateMetrics(m *TableMetrics) {
 func (tb *table) ForceMergePartitions(partitionNamePrefix string) error {
 	ptws := tb.GetPartitions(nil)
 	defer tb.PutPartitions(ptws)
+
+	tb.forceMergeWG.Add(1)
+	defer tb.forceMergeWG.Done()
+
 	for _, ptw := range ptws {
 		if !strings.HasPrefix(ptw.pt.name, partitionNamePrefix) {
 			continue
 		}
 		logger.Infof("starting forced merge for partition %q", ptw.pt.name)
 		startTime := time.Now()
-		if err := ptw.pt.ForceMergeAllParts(); err != nil {
+		if err := ptw.pt.ForceMergeAllParts(tb.stopCh); err != nil {
 			return fmt.Errorf("cannot complete forced merge for partition %q: %w", ptw.pt.name, err)
 		}
 		logger.Infof("forced merge for partition %q has been finished in %.3f seconds", ptw.pt.name, time.Since(startTime).Seconds())
@@ -386,7 +405,7 @@ func (tb *table) retentionWatcher() {
 	defer ticker.Stop()
 	for {
 		select {
-		case <-tb.stop:
+		case <-tb.stopCh:
 			return
 		case <-ticker.C:
 		}
@@ -420,41 +439,81 @@ func (tb *table) retentionWatcher() {
 	}
 }
 
-func (tb *table) startFinalDedupWatcher() {
-	tb.finalDedupWatcherWG.Add(1)
+func (tb *table) startHistoricalMergeWatcher() {
+	tb.historicalMergeWatcherWG.Add(1)
 	go func() {
-		tb.finalDedupWatcher()
-		tb.finalDedupWatcherWG.Done()
+		tb.historicalMergeWatcher()
+		tb.historicalMergeWatcherWG.Done()
 	}()
 }
 
-func (tb *table) finalDedupWatcher() {
+func (tb *table) historicalMergeWatcher() {
 	if !isDedupEnabled() {
-		// Deduplication is disabled.
+		// Deduplication and retentionFilters are disabled.
 		return
 	}
+
 	f := func() {
 		ptws := tb.GetPartitions(nil)
 		defer tb.PutPartitions(ptws)
 		timestamp := timestampFromTime(time.Now())
 		currentPartitionName := timestampToPartitionName(timestamp)
+
+		var ptwsToMerge []*partitionWrapper
 		for _, ptw := range ptws {
-			if ptw.pt.name == currentPartitionName || !ptw.pt.isFinalDedupNeeded() {
-				// Do not run final dedup for the current month.
+			if ptw.pt.name == currentPartitionName {
+				// Do not run force merge for the current month.
+				// For the current month, the samples are countinously
+				// deduplicated and retention filters applied by the background in-memory, small, and big part
+				// merge tasks. See:
+				// - partition.mergeParts() in paritiont.go and
+				// - Block.deduplicateSamplesDuringMerge() in block.go.
+				// - blockStreamMerger.getRetentionDeadline() in block_stream_merger.go
 				continue
 			}
-			if err := ptw.pt.runFinalDedup(); err != nil {
-				logger.Errorf("cannot run final dedup for partition %s: %s", ptw.pt.name, err)
-				continue
+			mergeScheduled := false
+			if ptw.pt.isFinalDedupNeeded() {
+				// mark partition with final deduplication marker
+				ptw.pt.isDedupScheduled.Store(true)
+				mergeScheduled = true
+			}
+			if mergeScheduled {
+				ptwsToMerge = append(ptwsToMerge, ptw)
 			}
 		}
+		for _, ptw := range ptwsToMerge {
+			t := time.Now()
+			pt := ptw.pt
+			var logContext []string
+			var logErrContext []string
+			if pt.isDedupScheduled.Load() {
+				logContext = append(logContext, "removing duplicate samples")
+				logErrContext = append(logErrContext, "remove duplicate samples")
+			}
+
+			logger.Infof("start %s for partition (%s, %s)", strings.Join(logContext, " and "), pt.bigPartsPath, pt.smallPartsPath)
+			if err := pt.ForceMergeAllParts(tb.stopCh); err != nil {
+				logger.Errorf("cannot %s for partition (%s, %s): %w", strings.Join(logErrContext, " and "), pt.bigPartsPath, pt.smallPartsPath, err)
+			}
+			logger.Infof("finished %s for partition (%s, %s) in %.3f seconds", strings.Join(logContext, " and "), pt.bigPartsPath, pt.smallPartsPath, time.Since(t).Seconds())
+
+			pt.isDedupScheduled.Store(false)
+		}
 	}
-	d := timeutil.AddJitterToDuration(time.Hour)
+
+	// adds 25% jitter in order to prevent thundering herd problem
+	// https://github.com/VictoriaMetrics/VictoriaMetrics/issues/7880
+	addJitter := func(d time.Duration) time.Duration {
+		dv := d / 4
+		p := float64(fastrand.Uint32()) / (1 << 32)
+		return d + time.Duration(p*float64(dv))
+	}
+	d := addJitter(finalDedupScheduleInterval)
 	t := time.NewTicker(d)
 	defer t.Stop()
 	for {
 		select {
-		case <-tb.stop:
+		case <-tb.stopCh:
 			return
 		case <-t.C:
 			f()
@@ -491,12 +550,31 @@ func mustOpenPartitions(smallPartitionsPath, bigPartitionsPath string, s *Storag
 	mustPopulatePartitionNames(smallPartitionsPath, ptNames)
 	mustPopulatePartitionNames(bigPartitionsPath, ptNames)
 	var pts []*partition
+	var ptsLock sync.Mutex
+
+	// Open partitions in parallel. This should reduce the time needed for opening multiple partitions.
+	var wg sync.WaitGroup
+	concurrencyLimiterCh := make(chan struct{}, cgroup.AvailableCPUs())
 	for ptName := range ptNames {
-		smallPartsPath := filepath.Join(smallPartitionsPath, ptName)
-		bigPartsPath := filepath.Join(bigPartitionsPath, ptName)
-		pt := mustOpenPartition(smallPartsPath, bigPartsPath, s)
-		pts = append(pts, pt)
+		wg.Add(1)
+		concurrencyLimiterCh <- struct{}{}
+		go func(ptName string) {
+			defer func() {
+				<-concurrencyLimiterCh
+				wg.Done()
+			}()
+
+			smallPartsPath := filepath.Join(smallPartitionsPath, ptName)
+			bigPartsPath := filepath.Join(bigPartitionsPath, ptName)
+			pt := mustOpenPartition(smallPartsPath, bigPartsPath, s)
+
+			ptsLock.Lock()
+			pts = append(pts, pt)
+			ptsLock.Unlock()
+		}(ptName)
 	}
+	wg.Wait()
+
 	return pts
 }
 

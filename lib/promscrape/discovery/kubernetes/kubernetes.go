@@ -6,14 +6,14 @@ import (
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promauth"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promutils"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/proxy"
 )
 
 // SDCheckInterval defines interval for targets refresh.
 var SDCheckInterval = flag.Duration("promscrape.kubernetesSDCheckInterval", 30*time.Second, "Interval for checking for changes in Kubernetes API server. "+
 	"This works only if kubernetes_sd_configs is configured in '-promscrape.config' file. "+
-	"See https://docs.victoriametrics.com/sd_configs.html#kubernetes_sd_configs for details")
+	"See https://docs.victoriametrics.com/victoriametrics/sd_configs/#kubernetes_sd_configs for details")
 
 // SDConfig represents kubernetes-based service discovery config.
 //
@@ -70,12 +70,12 @@ type Selector struct {
 }
 
 // ScrapeWorkConstructorFunc must construct ScrapeWork object for the given metaLabels.
-type ScrapeWorkConstructorFunc func(metaLabels *promutils.Labels) interface{}
+type ScrapeWorkConstructorFunc func(metaLabels *promutil.Labels) any
 
 // GetScrapeWorkObjects returns ScrapeWork objects for the given sdc.
 //
 // This function must be called after MustStart call.
-func (sdc *SDConfig) GetScrapeWorkObjects() ([]interface{}, error) {
+func (sdc *SDConfig) GetScrapeWorkObjects() ([]any, error) {
 	if sdc.cfg == nil {
 		return nil, sdc.startErr
 	}

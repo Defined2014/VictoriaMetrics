@@ -8,9 +8,9 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"unsafe"
 
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/atomicutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/bytesutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/lrucache"
@@ -18,6 +18,29 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/regexutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/stringsutil"
 )
+
+func getCommonMetricNameForTagFilterss(tfss []*TagFilters) []byte {
+	if len(tfss) == 0 {
+		return nil
+	}
+	prevName := getMetricNameFilter(tfss[0])
+	for _, tfs := range tfss[1:] {
+		name := getMetricNameFilter(tfs)
+		if string(prevName) != string(name) {
+			return nil
+		}
+	}
+	return prevName
+}
+
+func getMetricNameFilter(tfs *TagFilters) []byte {
+	for _, tf := range tfs.tfs {
+		if len(tf.key) == 0 && !tf.isNegative && !tf.isRegexp {
+			return tf.value
+		}
+	}
+	return nil
+}
 
 // convertToCompositeTagFilterss converts tfss to composite filters.
 //
@@ -129,8 +152,8 @@ func convertToCompositeTagFilters(tfs *TagFilters) []*TagFilters {
 }
 
 var (
-	compositeFilterSuccessConversions atomic.Uint64
-	compositeFilterMissingConversions atomic.Uint64
+	compositeFilterSuccessConversions atomicutil.Uint64
+	compositeFilterMissingConversions atomicutil.Uint64
 )
 
 // TagFilters represents filters used for filtering tags.
@@ -272,7 +295,7 @@ func (tf *tagFilter) Less(other *tagFilter) bool {
 	// Move composite filters to the top, since they usually match lower number of time series.
 	// Move regexp filters to the bottom, since they require scanning all the entries for the given label.
 	isCompositeA := tf.isComposite()
-	isCompositeB := tf.isComposite()
+	isCompositeB := other.isComposite()
 	if isCompositeA != isCompositeB {
 		return isCompositeA
 	}
@@ -525,7 +548,7 @@ func getRegexpFromCache(expr string) (*regexpCacheValue, error) {
 	}
 
 	sExpr := expr
-	orValues := regexutil.GetOrValues(sExpr)
+	orValues := regexutil.GetOrValuesPromRegex(sExpr)
 	var reMatch func(b []byte) bool
 	var reCost uint64
 	var literalSuffix string
@@ -621,7 +644,7 @@ const (
 func getOptimizedReMatchFuncExt(reMatch func(b []byte) bool, sre *syntax.Regexp) (func(b []byte) bool, string, uint64) {
 	if isDotStar(sre) {
 		// '.*'
-		return func(b []byte) bool {
+		return func(_ []byte) bool {
 			return true
 		}, "", fullMatchCost
 	}
@@ -749,10 +772,25 @@ func isDotStar(sre *syntax.Regexp) bool {
 	case syntax.OpCapture:
 		return isDotStar(sre.Sub[0])
 	case syntax.OpAlternate:
+		var (
+			hasDotPlus    bool
+			hasEmptyMatch bool
+		)
 		for _, reSub := range sre.Sub {
 			if isDotStar(reSub) {
 				return true
 			}
+			if !hasDotPlus {
+				hasDotPlus = isDotPlus(reSub)
+			}
+			if !hasEmptyMatch {
+				hasEmptyMatch = reSub.Op == syntax.OpEmptyMatch
+			}
+		}
+		// special case for .+|^$ expression
+		// it must be converted into .*
+		if hasDotPlus && hasEmptyMatch {
+			return true
 		}
 		return false
 	case syntax.OpStar:
@@ -858,7 +896,7 @@ func simplifyRegexp(expr string) (string, string) {
 	// Make a copy of expr before using it,
 	// since it may be constructed via bytesutil.ToUnsafeString()
 	expr = string(append([]byte{}, expr...))
-	prefix, suffix := regexutil.Simplify(expr)
+	prefix, suffix := regexutil.SimplifyPromRegex(expr)
 
 	// Put the prefix and the suffix to the cache.
 	ps := &prefixSuffix{

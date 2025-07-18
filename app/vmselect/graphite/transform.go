@@ -36,6 +36,7 @@ func init() {
 		"add":                         transformAdd,
 		"aggregate":                   transformAggregate,
 		"aggregateLine":               transformAggregateLine,
+		"aggregateSeriesLists":        transformAggregateSeriesLists,
 		"aggregateWithWildcards":      transformAggregateWithWildcards,
 		"alias":                       transformAlias,
 		"aliasByMetric":               transformAliasByMetric,
@@ -66,6 +67,7 @@ func init() {
 		"delay":                       transformDelay,
 		"derivative":                  transformDerivative,
 		"diffSeries":                  transformDiffSeries,
+		"diffSeriesLists":             transformDiffSeriesLists,
 		"divideSeries":                transformDivideSeries,
 		"divideSeriesLists":           transformDivideSeriesLists,
 		"drawAsInfinite":              transformDrawAsInfinite,
@@ -125,6 +127,7 @@ func init() {
 		"movingSum":                   transformMovingSum,
 		"movingWindow":                transformMovingWindow,
 		"multiplySeries":              transformMultiplySeries,
+		"multiplySeriesLists":         transformMultiplySeriesLists,
 		"multiplySeriesWithWildcards": transformMultiplySeriesWithWildcards,
 		"nPercentile":                 transformNPercentile,
 		"nonNegativeDerivative":       transformNonNegativeDerivative,
@@ -172,6 +175,7 @@ func init() {
 		"substr":                  transformSubstr,
 		"sum":                     transformSumSeries,
 		"sumSeries":               transformSumSeries,
+		"sumSeriesLists":          transformSumSeriesLists,
 		"sumSeriesWithWildcards":  transformSumSeriesWithWildcards,
 		"summarize":               transformSummarize,
 		"threshold":               transformThreshold,
@@ -401,7 +405,7 @@ func aggregateSeriesWithWildcards(ec *evalConfig, expr graphiteql.Expr, nextSeri
 	for _, pos := range positions {
 		positionsMap[pos] = struct{}{}
 	}
-	keyFunc := func(name string, tags map[string]string) string {
+	keyFunc := func(name string, _ map[string]string) string {
 		parts := strings.Split(getPathFromName(name), ".")
 		dstParts := parts[:0]
 		for i, part := range parts {
@@ -1316,6 +1320,88 @@ func transformDivideSeries(ec *evalConfig, fe *graphiteql.FuncExpr) (nextSeriesF
 	return f, nil
 }
 
+func aggregateSeriesListsGeneric(ec *evalConfig, fe *graphiteql.FuncExpr, funcName string) (nextSeriesFunc, error) {
+	args := fe.Args
+	agg, err := getAggrFunc(funcName)
+	if err != nil {
+		return nil, err
+	}
+	nextSeriesFirst, err := evalSeriesList(ec, args, "seriesListFirstPos", 0)
+	if err != nil {
+		return nil, err
+	}
+	nextSeriesSecond, err := evalSeriesList(ec, args, "seriesListSecondPos", 1)
+	if err != nil {
+		_, _ = drainAllSeries(nextSeriesFirst)
+		return nil, err
+	}
+	return aggregateSeriesList(ec, fe, nextSeriesFirst, nextSeriesSecond, agg, funcName)
+}
+
+// See https://graphite.readthedocs.io/en/latest/functions.html#graphite.render.functions.aggregateSeriesLists
+func transformAggregateSeriesLists(ec *evalConfig, fe *graphiteql.FuncExpr) (nextSeriesFunc, error) {
+	args := fe.Args
+	if len(args) != 3 && len(args) != 4 {
+		return nil, fmt.Errorf("unexpected number of args; got %d; want 3 or 4", len(args))
+	}
+
+	funcName, err := getString(args, "func", 2)
+	if err != nil {
+		return nil, err
+	}
+
+	return aggregateSeriesListsGeneric(ec, fe, funcName)
+}
+
+// See https://graphite.readthedocs.io/en/latest/functions.html#graphite.render.functions.sumSeriesLists
+func transformSumSeriesLists(ec *evalConfig, fe *graphiteql.FuncExpr) (nextSeriesFunc, error) {
+	return aggregateSeriesListsGeneric(ec, fe, "sum")
+}
+
+// See https://graphite.readthedocs.io/en/latest/functions.html#graphite.render.functions.multiplySeriesLists
+func transformMultiplySeriesLists(ec *evalConfig, fe *graphiteql.FuncExpr) (nextSeriesFunc, error) {
+	return aggregateSeriesListsGeneric(ec, fe, "multiply")
+}
+
+// See https://graphite.readthedocs.io/en/latest/functions.html#graphite.render.functions.diffSeriesLists
+func transformDiffSeriesLists(ec *evalConfig, fe *graphiteql.FuncExpr) (nextSeriesFunc, error) {
+	return aggregateSeriesListsGeneric(ec, fe, "diff")
+}
+
+func aggregateSeriesList(ec *evalConfig, fe *graphiteql.FuncExpr, nextSeriesFirst, nextSeriesSecond nextSeriesFunc, agg aggrFunc, funcName string) (nextSeriesFunc, error) {
+	ssFirst, stepFirst, err := fetchNormalizedSeries(ec, nextSeriesFirst, false)
+	if err != nil {
+		_, _ = drainAllSeries(nextSeriesSecond)
+		return nil, err
+	}
+	ssSecond, stepSecond, err := fetchNormalizedSeries(ec, nextSeriesSecond, false)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(ssFirst) != len(ssSecond) {
+		return nil, fmt.Errorf("First and second lists must have equal number of series; got %d vs %d series", len(ssFirst), len(ssSecond))
+	}
+	if stepFirst != stepSecond {
+		return nil, fmt.Errorf("step mismatch for first and second: %d vs %d", stepFirst, stepSecond)
+	}
+
+	valuePair := make([]float64, 2)
+	for i, s := range ssFirst {
+		sSecond := ssSecond[i]
+		values := s.Values
+		secondValues := sSecond.Values
+		for j, v := range values {
+			valuePair[0], valuePair[1] = v, secondValues[j]
+			values[j] = agg(valuePair)
+		}
+		s.Name = fmt.Sprintf("%sSeries(%s,%s)", funcName, s.Name, sSecond.Name)
+		s.expr = fe
+		s.pathExpression = s.Name
+	}
+	return multiSeriesFunc(ssFirst), nil
+}
+
 // See https://graphite.readthedocs.io/en/stable/functions.html#graphite.render.functions.divideSeriesLists
 func transformDivideSeriesLists(ec *evalConfig, fe *graphiteql.FuncExpr) (nextSeriesFunc, error) {
 	args := fe.Args
@@ -1326,36 +1412,14 @@ func transformDivideSeriesLists(ec *evalConfig, fe *graphiteql.FuncExpr) (nextSe
 	if err != nil {
 		return nil, err
 	}
-	ssDividend, stepDivident, err := fetchNormalizedSeries(ec, nextDividend, false)
-	if err != nil {
-		return nil, err
-	}
 	nextDivisor, err := evalSeriesList(ec, args, "divisorSeriesList", 1)
 	if err != nil {
 		return nil, err
 	}
-	ssDivisor, stepDivisor, err := fetchNormalizedSeries(ec, nextDivisor, false)
-	if err != nil {
-		return nil, err
-	}
-	if len(ssDividend) != len(ssDivisor) {
-		return nil, fmt.Errorf("divident and divisor must have equal number of series; got %d vs %d series", len(ssDividend), len(ssDivisor))
-	}
-	if stepDivident != stepDivisor {
-		return nil, fmt.Errorf("step mismatch for divident and divisor: %d vs %d", stepDivident, stepDivisor)
-	}
-	for i, s := range ssDividend {
-		sDivisor := ssDivisor[i]
-		values := s.Values
-		divisorValues := sDivisor.Values
-		for j, v := range values {
-			values[j] = v / divisorValues[j]
-		}
-		s.Name = fmt.Sprintf("divideSeries(%s,%s)", s.Name, sDivisor.Name)
-		s.expr = fe
-		s.pathExpression = s.Name
-	}
-	return multiSeriesFunc(ssDividend), nil
+
+	return aggregateSeriesList(ec, fe, nextDividend, nextDivisor, func(values []float64) float64 {
+		return values[0] / values[1]
+	}, "divide")
 }
 
 // See https://graphite.readthedocs.io/en/stable/functions.html#graphite.render.functions.drawAsInfinite
@@ -1819,7 +1883,7 @@ func transformGroupByTags(ec *evalConfig, fe *graphiteql.FuncExpr) (nextSeriesFu
 	if err != nil {
 		return nil, err
 	}
-	keyFunc := func(name string, tags map[string]string) string {
+	keyFunc := func(_ string, tags map[string]string) string {
 		return formatKeyFromTags(tags, tagKeys, callback)
 	}
 	return groupByKeyFunc(ec, fe, nextSeries, callback, keyFunc)
@@ -1904,10 +1968,10 @@ func (h *minSeriesHeap) Swap(i, j int) {
 	a := *h
 	a[i], a[j] = a[j], a[i]
 }
-func (h *minSeriesHeap) Push(x interface{}) {
+func (h *minSeriesHeap) Push(x any) {
 	*h = append(*h, x.(*seriesWithWeight))
 }
-func (h *minSeriesHeap) Pop() interface{} {
+func (h *minSeriesHeap) Pop() any {
 	a := *h
 	x := a[len(a)-1]
 	*h = a[:len(a)-1]
@@ -2435,10 +2499,10 @@ func (h *maxSeriesHeap) Swap(i, j int) {
 	a := *h
 	a[i], a[j] = a[j], a[i]
 }
-func (h *maxSeriesHeap) Push(x interface{}) {
+func (h *maxSeriesHeap) Push(x any) {
 	*h = append(*h, x.(*seriesWithWeight))
 }
-func (h *maxSeriesHeap) Pop() interface{} {
+func (h *maxSeriesHeap) Pop() any {
 	a := *h
 	x := a[len(a)-1]
 	*h = a[:len(a)-1]
@@ -2530,17 +2594,17 @@ func transformMinMax(ec *evalConfig, fe *graphiteql.FuncExpr) (nextSeriesFunc, e
 	}
 	f := nextSeriesConcurrentWrapper(nextSeries, func(s *series) (*series, error) {
 		values := s.Values
-		min := aggrMin(values)
-		if math.IsNaN(min) {
-			min = 0
+		minV := aggrMin(values)
+		if math.IsNaN(minV) {
+			minV = 0
 		}
-		max := aggrMax(values)
-		if math.IsNaN(max) {
-			max = 0
+		maxV := aggrMax(values)
+		if math.IsNaN(maxV) {
+			maxV = 0
 		}
-		vRange := max - min
+		vRange := maxV - minV
 		for i, v := range values {
-			v = (v - min) / vRange
+			v = (v - minV) / vRange
 			if math.IsInf(v, 0) {
 				v = 0
 			}
@@ -2911,9 +2975,9 @@ func transformRemoveAbovePercentile(ec *evalConfig, fe *graphiteql.FuncExpr) (ne
 	}
 	f := nextSeriesConcurrentWrapper(nextSeries, func(s *series) (*series, error) {
 		values := s.Values
-		max := aggrFunc(values)
+		maxV := aggrFunc(values)
 		for i, v := range values {
-			if v > max {
+			if v > maxV {
 				values[i] = nan
 			}
 		}
@@ -2971,9 +3035,9 @@ func transformRemoveBelowPercentile(ec *evalConfig, fe *graphiteql.FuncExpr) (ne
 	}
 	f := nextSeriesConcurrentWrapper(nextSeries, func(s *series) (*series, error) {
 		values := s.Values
-		min := aggrFunc(values)
+		minV := aggrFunc(values)
 		for i, v := range values {
-			if v < min {
+			if v < minV {
 				values[i] = nan
 			}
 		}
@@ -3087,7 +3151,7 @@ func transformRemoveEmptySeries(ec *evalConfig, fe *graphiteql.FuncExpr) (nextSe
 			xff = xFilesFactor
 		}
 		n := aggrCount(s.Values)
-		if n/float64(len(s.Values)) < xff {
+		if n/float64(len(s.Values)) <= xff {
 			return nil, nil
 		}
 		s.expr = fe
@@ -4450,11 +4514,11 @@ func transformOffsetToZero(ec *evalConfig, fe *graphiteql.FuncExpr) (nextSeriesF
 	}
 	f := nextSeriesConcurrentWrapper(nextSeries, func(s *series) (*series, error) {
 		values := s.Values
-		min := aggrMin(values)
+		minV := aggrMin(values)
 		for i, v := range values {
-			values[i] = v - min
+			values[i] = v - minV
 		}
-		s.Tags["offsetToZero"] = fmt.Sprintf("%g", min)
+		s.Tags["offsetToZero"] = fmt.Sprintf("%g", minV)
 		s.Name = fmt.Sprintf("offsetToZero(%s)", s.Name)
 		s.expr = fe
 		s.pathExpression = s.Name
@@ -4503,29 +4567,29 @@ func transformPerSecond(ec *evalConfig, fe *graphiteql.FuncExpr) (nextSeriesFunc
 	return f, nil
 }
 
-func nonNegativeDelta(curr, prev, max, min float64) (float64, float64) {
-	if !math.IsNaN(max) && curr > max {
+func nonNegativeDelta(currV, prevV, maxV, minV float64) (float64, float64) {
+	if !math.IsNaN(maxV) && currV > maxV {
 		return nan, nan
 	}
-	if !math.IsNaN(min) && curr < min {
+	if !math.IsNaN(minV) && currV < minV {
 		return nan, nan
 	}
-	if math.IsNaN(curr) || math.IsNaN(prev) {
-		return nan, curr
+	if math.IsNaN(currV) || math.IsNaN(prevV) {
+		return nan, currV
 	}
-	if curr >= prev {
-		return curr - prev, curr
+	if currV >= prevV {
+		return currV - prevV, currV
 	}
-	if !math.IsNaN(max) {
-		if math.IsNaN(min) {
-			min = float64(0)
+	if !math.IsNaN(maxV) {
+		if math.IsNaN(minV) {
+			minV = float64(0)
 		}
-		return max + 1 + curr - prev - min, curr
+		return maxV + 1 + currV - prevV - minV, currV
 	}
-	if !math.IsNaN(min) {
-		return curr - min, curr
+	if !math.IsNaN(minV) {
+		return currV - minV, currV
 	}
-	return nan, curr
+	return nan, currV
 }
 
 // See https://graphite.readthedocs.io/en/stable/functions.html#graphite.render.functions.threshold
@@ -4877,8 +4941,8 @@ func transformSortByMinima(ec *evalConfig, fe *graphiteql.FuncExpr) (nextSeriesF
 	}
 	// Filter out series with all the values smaller than 0
 	f := nextSeriesConcurrentWrapper(nextSeries, func(s *series) (*series, error) {
-		max := aggrMax(s.Values)
-		if math.IsNaN(max) || max <= 0 {
+		maxV := aggrMax(s.Values)
+		if math.IsNaN(maxV) || maxV <= 0 {
 			return nil, nil
 		}
 		return s, nil

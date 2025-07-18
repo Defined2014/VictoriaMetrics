@@ -13,12 +13,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/httputil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promauth"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promscrape/discoveryutils"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promscrape/discoveryutil"
 )
 
-var configMap = discoveryutils.NewConfigMap()
+var configMap = discoveryutil.NewConfigMap()
 
 // apiCredentials can be refreshed
 type apiCredentials struct {
@@ -61,7 +62,7 @@ func (cfg *apiConfig) getFreshAPICredentials() (*apiCredentials, error) {
 }
 
 func getAPIConfig(sdc *SDConfig, baseDir string) (*apiConfig, error) {
-	v, err := configMap.Get(sdc, func() (interface{}, error) { return newAPIConfig(sdc, baseDir) })
+	v, err := configMap.Get(sdc, func() (any, error) { return newAPIConfig(sdc, baseDir) })
 	if err != nil {
 		return nil, err
 	}
@@ -73,11 +74,13 @@ func newAPIConfig(sdc *SDConfig, baseDir string) (*apiConfig, error) {
 	if port == 0 {
 		port = 80
 	}
+
+	tr := httputil.NewTransport(false, "vm_promscrape_discovery_openstack")
+	tr.MaxIdleConnsPerHost = 100
+
 	cfg := &apiConfig{
 		client: &http.Client{
-			Transport: &http.Transport{
-				MaxIdleConnsPerHost: 100,
-			},
+			Transport: tr,
 		},
 		availability: sdc.Availability,
 		region:       sdc.Region,
@@ -94,15 +97,7 @@ func newAPIConfig(sdc *SDConfig, baseDir string) (*apiConfig, error) {
 			cfg.client.CloseIdleConnections()
 			return nil, fmt.Errorf("cannot parse TLS config: %w", err)
 		}
-		tlsConfig, err := ac.NewTLSConfig()
-		if err != nil {
-			cfg.client.CloseIdleConnections()
-			return nil, fmt.Errorf("cannot initialize TLS config: %w", err)
-		}
-		cfg.client.Transport = &http.Transport{
-			TLSClientConfig:     tlsConfig,
-			MaxIdleConnsPerHost: 100,
-		}
+		cfg.client.Transport = ac.NewRoundTripper(tr)
 	}
 	// use public compute endpoint by default
 	if len(cfg.availability) == 0 {

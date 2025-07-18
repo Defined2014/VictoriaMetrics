@@ -1,6 +1,7 @@
 package promql
 
 import (
+	"bytes"
 	"fmt"
 	"math"
 	"strings"
@@ -23,8 +24,8 @@ var binaryOpFuncs = map[string]binaryOpFunc{
 	"atan2": newBinaryOpArithFunc(binaryop.Atan2),
 
 	// cmp ops
-	"==": newBinaryOpCmpFunc(binaryop.Eq),
-	"!=": newBinaryOpCmpFunc(binaryop.Neq),
+	"==": binaryOpEqFunc,
+	"!=": binaryOpNeqFunc,
 	">":  newBinaryOpCmpFunc(binaryop.Gt),
 	"<":  newBinaryOpCmpFunc(binaryop.Lt),
 	">=": newBinaryOpCmpFunc(binaryop.Gte),
@@ -54,6 +55,84 @@ type binaryOpFuncArg struct {
 
 type binaryOpFunc func(bfa *binaryOpFuncArg) ([]*timeseries, error)
 
+func binaryOpEqFunc(bfa *binaryOpFuncArg) ([]*timeseries, error) {
+	if !isUnionFunc(bfa.be.Left) && !isUnionFunc(bfa.be.Right) {
+		return binaryOpEqStdFunc(bfa)
+	}
+
+	// Special case for `q == (1,2,3)`
+	left := bfa.left
+	right := bfa.right
+	if isUnionFunc(bfa.be.Left) {
+		left, right = right, left
+	}
+	if len(left) == 0 || len(right) == 0 {
+		return nil, nil
+	}
+	for _, tsLeft := range left {
+		values := tsLeft.Values
+		for j, v := range values {
+			if !containsValueAt(right, v, j) {
+				values[j] = nan
+			}
+		}
+	}
+	// Do not remove time series containing only NaNs, since then the `(foo op bar) default N`
+	// won't work as expected if `(foo op bar)` results to NaN series.
+	return left, nil
+}
+
+func binaryOpNeqFunc(bfa *binaryOpFuncArg) ([]*timeseries, error) {
+	if !isUnionFunc(bfa.be.Left) && !isUnionFunc(bfa.be.Right) {
+		return binaryOpNeqStdFunc(bfa)
+	}
+
+	// Special case for `q != (1,2,3)`
+	left := bfa.left
+	right := bfa.right
+	if isUnionFunc(bfa.be.Left) {
+		left, right = right, left
+	}
+	if len(left) == 0 {
+		return nil, nil
+	}
+	if len(right) == 0 {
+		return left, nil
+	}
+	for _, tsLeft := range left {
+		values := tsLeft.Values
+		for j, v := range values {
+			if containsValueAt(right, v, j) {
+				values[j] = nan
+			}
+		}
+	}
+	// Do not remove time series containing only NaNs, since then the `(foo op bar) default N`
+	// won't work as expected if `(foo op bar)` results to NaN series.
+	return left, nil
+}
+
+func isUnionFunc(e metricsql.Expr) bool {
+	if fe, ok := e.(*metricsql.FuncExpr); ok && (fe.Name == "" || strings.EqualFold(fe.Name, "union")) {
+		return true
+	}
+	return false
+}
+
+func containsValueAt(tss []*timeseries, v float64, idx int) bool {
+	for _, ts := range tss {
+		if ts.Values[idx] == v {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	binaryOpEqStdFunc  = newBinaryOpCmpFunc(binaryop.Eq)
+	binaryOpNeqStdFunc = newBinaryOpCmpFunc(binaryop.Neq)
+)
+
 func newBinaryOpCmpFunc(cf func(left, right float64) bool) binaryOpFunc {
 	cfe := func(left, right float64, isBool bool) float64 {
 		if !isBool {
@@ -74,7 +153,7 @@ func newBinaryOpCmpFunc(cf func(left, right float64) bool) binaryOpFunc {
 }
 
 func newBinaryOpArithFunc(af func(left, right float64) float64) binaryOpFunc {
-	afe := func(left, right float64, isBool bool) float64 {
+	afe := func(left, right float64, _ bool) float64 {
 		return af(left, right)
 	}
 	return newBinaryOpFunc(afe)
@@ -225,7 +304,7 @@ func ensureSingleTimeseries(side string, be *metricsql.BinaryOpExpr, tss []*time
 func groupJoin(singleTimeseriesSide string, be *metricsql.BinaryOpExpr, rvsLeft, rvsRight, tssLeft, tssRight []*timeseries) ([]*timeseries, []*timeseries, error) {
 	joinTags := be.JoinModifier.Args
 	var skipTags []string
-	if strings.ToLower(be.GroupModifier.Op) == "on" {
+	if strings.EqualFold(be.GroupModifier.Op, "on") {
 		skipTags = be.GroupModifier.Args
 	}
 	joinPrefix := ""
@@ -327,7 +406,7 @@ func resetMetricGroupIfRequired(be *metricsql.BinaryOpExpr, ts *timeseries) {
 	}
 	if be.KeepMetricNames {
 		// Do not reset MetricGroup if it is explicitly requested via `a op b keep_metric_names`
-		// See https://docs.victoriametrics.com/MetricsQL.html#keep_metric_names
+		// See https://docs.victoriametrics.com/victoriametrics/metricsql/#keep_metric_names
 		return
 	}
 
@@ -405,8 +484,11 @@ func binaryOpOr(bfa *binaryOpFuncArg) ([]*timeseries, error) {
 	mLeft, mRight := createTimeseriesMapByTagSet(bfa.be, bfa.left, bfa.right)
 	var rvs []*timeseries
 
-	for _, tss := range mLeft {
-		rvs = append(rvs, tss...)
+	for k, tss := range mLeft {
+		tssLeft := removeEmptySeries(tss)
+		// re-assign modified slice to map, since it can be referred later
+		mLeft[k] = tssLeft
+		rvs = append(rvs, tssLeft...)
 	}
 	// Sort left-hand-side series by metric name as Prometheus does.
 	// See https://github.com/VictoriaMetrics/VictoriaMetrics/issues/5393
@@ -419,7 +501,10 @@ func binaryOpOr(bfa *binaryOpFuncArg) ([]*timeseries, error) {
 			rvs = append(rvs, tssRight...)
 			continue
 		}
-		fillLeftNaNsWithRightValues(tssLeft, tssRight)
+		fillLeftNaNsWithRightValuesOrMerge(tssLeft, tssRight)
+		// tssRight might be filled with NaNs after merge
+		tssRight = removeEmptySeries(tssRight)
+		rvs = append(rvs, tssRight...)
 	}
 	// Sort the added right-hand-side series by metric name as Prometheus does.
 	// See https://github.com/VictoriaMetrics/VictoriaMetrics/issues/5393
@@ -446,6 +531,65 @@ func fillLeftNaNsWithRightValues(tssLeft, tssRight []*timeseries) {
 			}
 		}
 	}
+}
+
+// fill gaps in tssLeft with values from tssRight when labels match
+// Set NaNs to tssRight when tssLeft has corresponding values
+// or if tssLeft and tssRight can be merged.
+//
+// See https://github.com/VictoriaMetrics/VictoriaMetrics/issues/7759
+// https://github.com/VictoriaMetrics/VictoriaMetrics/issues/7640
+func fillLeftNaNsWithRightValuesOrMerge(tssLeft, tssRight []*timeseries) {
+	if isScalar(tssRight) {
+		// fast path: if tssRight is scalar then it can be merged
+		// with tssLeft only when tssLeft is also a scalar.
+		// If tssLeft is not a scalar, then no need in comparing MetricNames.
+		// Typical case is: metric_selector or on() vector(0)
+		canBeMerged := isScalar(tssLeft)
+		valuesRight := tssRight[0].Values
+		for _, tsLeft := range tssLeft {
+			valuesLeft := tsLeft.Values
+			for i, v := range valuesLeft {
+				leftIsNaN := math.IsNaN(v)
+				valueRight := valuesRight[i]
+				if leftIsNaN && canBeMerged {
+					// fill NaNs with valueRight if labels match
+					valuesLeft[i] = valueRight
+				}
+				if !leftIsNaN || canBeMerged {
+					// set NaN to valueRight if valueLeft is not NaN
+					// or if left and right can be merged
+					valuesRight[i] = nan
+				}
+			}
+		}
+		return
+	}
+
+	nameLeft, nameRight := bbPool.Get(), bbPool.Get()
+	for _, tsLeft := range tssLeft {
+		valuesLeft := tsLeft.Values
+		nameLeft.B = marshalMetricNameSorted(nameLeft.B[:0], &tsLeft.MetricName)
+		for i, v := range valuesLeft {
+			leftIsNaN := math.IsNaN(v)
+			for _, tsRight := range tssRight {
+				nameRight.B = marshalMetricNameSorted(nameRight.B[:0], &tsRight.MetricName)
+				canBeMerged := bytes.Equal(nameLeft.B, nameRight.B)
+				valueRight := tsRight.Values[i]
+				if leftIsNaN && canBeMerged {
+					// fill NaNs with valueRight if labels match
+					valuesLeft[i] = valueRight
+				}
+				if !leftIsNaN || canBeMerged {
+					// set NaN to valueRight if valueLeft is not NaN
+					// or if left and right can be merged
+					tsRight.Values[i] = nan
+				}
+			}
+		}
+	}
+	bbPool.Put(nameLeft)
+	bbPool.Put(nameRight)
 }
 
 func binaryOpIfnot(bfa *binaryOpFuncArg) ([]*timeseries, error) {

@@ -10,6 +10,7 @@ export interface CustomPanelState {
   isTracingEnabled: boolean;
   seriesLimits: SeriesLimits
   tableCompact: boolean;
+  reduceMemUsage: boolean;
 }
 
 export type CustomPanelAction =
@@ -18,17 +19,23 @@ export type CustomPanelAction =
   | { type: "TOGGLE_NO_CACHE"}
   | { type: "TOGGLE_QUERY_TRACING" }
   | { type: "TOGGLE_TABLE_COMPACT" }
+  | { type: "TOGGLE_REDUCE_MEM_USAGE"}
 
-const queryTab = getQueryStringValue("g0.tab", 0) as string;
-const displayType = displayTypeTabs.find(t => t.prometheusCode === +queryTab || t.value === queryTab);
+export const getInitialDisplayType = () => {
+  const queryTab = getQueryStringValue("g0.tab", 0) as string;
+  const displayType = displayTypeTabs.find(t => t.prometheusCode === +queryTab || t.value === queryTab);
+  return displayType?.value || DisplayType.chart;
+};
+
 const limitsStorage = getFromStorage("SERIES_LIMITS") as string;
 
 export const initialCustomPanelState: CustomPanelState = {
-  displayType: (displayType?.value || DisplayType.chart),
+  displayType: getInitialDisplayType(),
   nocache: false,
   isTracingEnabled: false,
   seriesLimits: limitsStorage ? JSON.parse(limitsStorage) : DEFAULT_MAX_SERIES,
   tableCompact: getFromStorage("TABLE_COMPACT") as boolean || false,
+  reduceMemUsage: false
 };
 
 export function reducer(state: CustomPanelState, action: CustomPanelAction): CustomPanelState {
@@ -60,6 +67,12 @@ export function reducer(state: CustomPanelState, action: CustomPanelAction): Cus
       return {
         ...state,
         tableCompact: !state.tableCompact
+      };
+    case "TOGGLE_REDUCE_MEM_USAGE":
+      saveToStorage("TABLE_COMPACT", !state.reduceMemUsage);
+      return {
+        ...state,
+        reduceMemUsage: !state.reduceMemUsage
       };
     default:
       throw new Error();

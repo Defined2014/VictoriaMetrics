@@ -9,7 +9,7 @@ import (
 func TestDurationSetFailure(t *testing.T) {
 	f := func(value string) {
 		t.Helper()
-		var d Duration
+		var d RetentionDuration
 		if err := d.Set(value); err == nil {
 			t.Fatalf("expecting non-nil error in d.Set(%q)", value)
 		}
@@ -24,20 +24,21 @@ func TestDurationSetFailure(t *testing.T) {
 	f("12345")
 
 	// Too big duration
+	f("999y")
 	f("100000000000y")
 
 	// Negative duration
 	f("-1")
 	f("-34h")
 
-	// Duration in minutes is confused with duration in months
+	// RetentionDuration in minutes is confused with duration in months
 	f("1m")
 }
 
 func TestDurationSetSuccess(t *testing.T) {
 	f := func(value string, expectedMsecs int64) {
 		t.Helper()
-		var d Duration
+		var d RetentionDuration
 		if err := d.Set(value); err != nil {
 			t.Fatalf("unexpected error in d.Set(%q): %s", value, err)
 		}
@@ -59,12 +60,13 @@ func TestDurationSetSuccess(t *testing.T) {
 	f("2.3W", 2.3*7*24*3600*1000)
 	f("1w", 7*24*3600*1000)
 	f("0.25y", 0.25*365*24*3600*1000)
+	f("100y", 100*365*24*3600*1000)
 }
 
 func TestDurationDuration(t *testing.T) {
 	f := func(value string, expected time.Duration) {
 		t.Helper()
-		var d Duration
+		var d RetentionDuration
 		if err := d.Set(value); err != nil {
 			t.Fatalf("unexpected error in d.Set(%q): %s", value, err)
 		}

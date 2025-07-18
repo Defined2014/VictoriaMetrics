@@ -13,9 +13,9 @@ import (
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmctl/vm"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/bytesutil"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/httputils"
 	"github.com/gogo/protobuf/proto"
 	"github.com/golang/snappy"
+	"github.com/prometheus/prometheus/config"
 	"github.com/prometheus/prometheus/prompb"
 	"github.com/prometheus/prometheus/storage/remote"
 	"github.com/prometheus/prometheus/tsdb/chunkenc"
@@ -46,6 +46,8 @@ type Client struct {
 type Config struct {
 	// Addr of remote storage
 	Addr string
+	// Transport allows specifying custom http.Transport
+	Transport *http.Transport
 	// DisablePathAppend disable automatic appending of the remote read path
 	DisablePathAppend bool
 	// Timeout defines timeout for HTTP requests
@@ -64,15 +66,6 @@ type Config struct {
 	// LabelName, LabelValue stands for label=~value pair used for read requests.
 	// Is optional.
 	LabelName, LabelValue string
-
-	// Optional cert file, key file, CA file and server name for client side TLS configuration
-	CertFile   string
-	KeyFile    string
-	CAFile     string
-	ServerName string
-
-	// TLSSkipVerify defines whether to skip TLS certificate verification when connecting to the remote read address.
-	InsecureSkipVerify bool
 }
 
 // Filter defines a list of filters applied to requested data
@@ -110,16 +103,13 @@ func NewClient(cfg Config) (*Client, error) {
 		}
 	}
 
-	tr, err := httputils.Transport(cfg.Addr, cfg.CertFile, cfg.KeyFile, cfg.CAFile, cfg.ServerName, cfg.InsecureSkipVerify)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create transport: %s", err)
+	client := &http.Client{Timeout: cfg.Timeout}
+	if cfg.Transport != nil {
+		client.Transport = cfg.Transport
 	}
 
 	c := &Client{
-		c: &http.Client{
-			Timeout:   cfg.Timeout,
-			Transport: tr,
-		},
+		c:                 client,
 		addr:              strings.TrimSuffix(cfg.Addr, "/"),
 		disablePathAppend: cfg.DisablePathAppend,
 		user:              cfg.Username,
@@ -249,7 +239,7 @@ func processStreamResponse(body io.ReadCloser, callback StreamCallback) error {
 	bb := bbPool.Get()
 	defer func() { bbPool.Put(bb) }()
 
-	stream := remote.NewChunkedReader(body, remote.DefaultChunkedReadLimit, bb.B)
+	stream := remote.NewChunkedReader(body, config.DefaultChunkedReadLimit, bb.B)
 	for {
 		res := &prompb.ChunkedReadResponse{}
 		err := stream.NextProto(res)

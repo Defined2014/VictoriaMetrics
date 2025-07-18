@@ -10,7 +10,7 @@ import (
 
 	"github.com/VictoriaMetrics/metrics"
 
-	vminsertCommon "github.com/VictoriaMetrics/VictoriaMetrics/app/vminsert/common"
+	"github.com/VictoriaMetrics/VictoriaMetrics/app/vminsert/common"
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vminsert/csvimport"
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vminsert/datadogsketches"
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vminsert/datadogv1"
@@ -31,7 +31,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/bytesutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/flagutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/httpserver"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/influxutils"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/influxutil"
 	graphiteserver "github.com/VictoriaMetrics/VictoriaMetrics/lib/ingestserver/graphite"
 	influxserver "github.com/VictoriaMetrics/VictoriaMetrics/lib/ingestserver/influx"
 	opentsdbserver "github.com/VictoriaMetrics/VictoriaMetrics/lib/ingestserver/opentsdb"
@@ -39,8 +39,10 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/procutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/prompbmarshal"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promscrape"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/protoparser/common"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/storage"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/protoparser/opentelemetry/firehose"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/protoparser/protoparserutil"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/stringsutil"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/timeserieslimits"
 )
 
 var (
@@ -63,10 +65,11 @@ var (
 		"See also -opentsdbHTTPListenAddr.useProxyProtocol")
 	opentsdbHTTPUseProxyProtocol = flag.Bool("opentsdbHTTPListenAddr.useProxyProtocol", false, "Whether to use proxy protocol for connections accepted "+
 		"at -opentsdbHTTPListenAddr . See https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt")
-	configAuthKey          = flagutil.NewPassword("configAuthKey", "Authorization key for accessing /config page. It must be passed via authKey query arg")
-	reloadAuthKey          = flagutil.NewPassword("reloadAuthKey", "Auth key for /-/reload http endpoint. It must be passed as authKey=...")
-	maxLabelsPerTimeseries = flag.Int("maxLabelsPerTimeseries", 30, "The maximum number of labels accepted per time series. Superfluous labels are dropped. In this case the vm_metrics_with_dropped_labels_total metric at /metrics page is incremented")
-	maxLabelValueLen       = flag.Int("maxLabelValueLen", 16*1024, "The maximum length of label values in the accepted time series. Longer label values are truncated. In this case the vm_too_long_label_values_total metric at /metrics page is incremented")
+	configAuthKey          = flagutil.NewPassword("configAuthKey", "Authorization key for accessing /config page. It must be passed via authKey query arg. It overrides -httpAuth.*")
+	reloadAuthKey          = flagutil.NewPassword("reloadAuthKey", "Auth key for /-/reload http endpoint. It must be passed via authKey query arg. It overrides httpAuth.* settings.")
+	maxLabelsPerTimeseries = flag.Int("maxLabelsPerTimeseries", 40, "The maximum number of labels per time series to be accepted. Series with superfluous labels are ignored. In this case the vm_rows_ignored_total{reason=\"too_many_labels\"} metric at /metrics page is incremented")
+	maxLabelNameLen        = flag.Int("maxLabelNameLen", 256, "The maximum length of label name in the accepted time series. Series with longer label name are ignored. In this case the vm_rows_ignored_total{reason=\"too_long_label_name\"} metric at /metrics page is incremented")
+	maxLabelValueLen       = flag.Int("maxLabelValueLen", 4*1024, "The maximum length of label values in the accepted time series. Series with longer label value are ignored. In this case the vm_rows_ignored_total{reason=\"too_long_label_value\"} metric at /metrics page is incremented")
 )
 
 var (
@@ -84,10 +87,8 @@ var staticServer = http.FileServer(http.FS(staticFiles))
 // Init initializes vminsert.
 func Init() {
 	relabel.Init()
-	vminsertCommon.InitStreamAggr()
-	storage.SetMaxLabelsPerTimeseries(*maxLabelsPerTimeseries)
-	storage.SetMaxLabelValueLen(*maxLabelValueLen)
-	common.StartUnmarshalWorkers()
+	common.InitStreamAggr()
+	protoparserutil.StartUnmarshalWorkers()
 	if len(*graphiteListenAddr) > 0 {
 		graphiteServer = graphiteserver.MustStart(*graphiteListenAddr, *graphiteUseProxyProtocol, graphite.InsertHandler)
 	}
@@ -100,9 +101,10 @@ func Init() {
 	if len(*opentsdbHTTPListenAddr) > 0 {
 		opentsdbhttpServer = opentsdbhttpserver.MustStart(*opentsdbHTTPListenAddr, *opentsdbHTTPUseProxyProtocol, opentsdbhttp.InsertHandler)
 	}
-	promscrape.Init(func(at *auth.Token, wr *prompbmarshal.WriteRequest) {
+	promscrape.Init(func(_ *auth.Token, wr *prompbmarshal.WriteRequest) {
 		prompush.Push(wr)
 	})
+	timeserieslimits.Init(*maxLabelsPerTimeseries, *maxLabelNameLen, *maxLabelValueLen)
 }
 
 // Stop stops vminsert.
@@ -120,8 +122,8 @@ func Stop() {
 	if len(*opentsdbHTTPListenAddr) > 0 {
 		opentsdbhttpServer.MustStop()
 	}
-	common.StopUnmarshalWorkers()
-	vminsertCommon.MustStopStreamAggr()
+	protoparserutil.StopUnmarshalWorkers()
+	common.MustStopStreamAggr()
 }
 
 // RequestHandler is a handler for Prometheus remote storage write API
@@ -162,8 +164,8 @@ func RequestHandler(w http.ResponseWriter, r *http.Request) bool {
 		path = strings.TrimSuffix(path, "/")
 	}
 	switch path {
-	case "/prometheus/api/v1/write", "/api/v1/write":
-		if common.HandleVMProtoServerHandshake(w, r) {
+	case "/prometheus/api/v1/write", "/api/v1/write", "/api/v1/push", "/prometheus/api/v1/push":
+		if protoparserutil.HandleVMProtoServerHandshake(w, r) {
 			return true
 		}
 		prometheusWriteRequests.Inc()
@@ -214,7 +216,11 @@ func RequestHandler(w http.ResponseWriter, r *http.Request) bool {
 	case "/influx/query", "/query":
 		influxQueryRequests.Inc()
 		addInfluxResponseHeaders(w)
-		influxutils.WriteDatabaseNames(w)
+		influxutil.WriteDatabaseNames(w)
+		return true
+	case "/influx/health":
+		influxHealthRequests.Inc()
+		influxutil.WriteHealthCheckResponse(w)
 		return true
 	case "/opentelemetry/api/v1/push", "/opentelemetry/v1/metrics":
 		opentelemetryPushRequests.Inc()
@@ -223,7 +229,7 @@ func RequestHandler(w http.ResponseWriter, r *http.Request) bool {
 			httpserver.Errorf(w, r, "%s", err)
 			return true
 		}
-		w.WriteHeader(http.StatusOK)
+		firehose.WriteSuccessResponse(w, r)
 		return true
 	case "/newrelic":
 		newrelicCheckRequest.Inc()
@@ -314,8 +320,10 @@ func RequestHandler(w http.ResponseWriter, r *http.Request) bool {
 	case "/prometheus/api/v1/targets", "/api/v1/targets":
 		promscrapeAPIV1TargetsRequests.Inc()
 		w.Header().Set("Content-Type", "application/json")
+		// https://prometheus.io/docs/prometheus/latest/querying/api/#targets
 		state := r.FormValue("state")
-		promscrape.WriteAPIV1Targets(w, state)
+		scrapePool := r.FormValue("scrapePool")
+		promscrape.WriteAPIV1Targets(w, state, scrapePool)
 		return true
 	case "/prometheus/target_response", "/target_response":
 		promscrapeTargetResponseRequests.Inc()
@@ -326,7 +334,7 @@ func RequestHandler(w http.ResponseWriter, r *http.Request) bool {
 		}
 		return true
 	case "/prometheus/config", "/config":
-		if !httpserver.CheckAuthFlag(w, r, configAuthKey.Get(), "configAuthKey") {
+		if !httpserver.CheckAuthFlag(w, r, configAuthKey) {
 			return true
 		}
 		promscrapeConfigRequests.Inc()
@@ -335,17 +343,17 @@ func RequestHandler(w http.ResponseWriter, r *http.Request) bool {
 		return true
 	case "/prometheus/api/v1/status/config", "/api/v1/status/config":
 		// See https://prometheus.io/docs/prometheus/latest/querying/api/#config
-		if !httpserver.CheckAuthFlag(w, r, configAuthKey.Get(), "configAuthKey") {
+		if !httpserver.CheckAuthFlag(w, r, configAuthKey) {
 			return true
 		}
 		promscrapeStatusConfigRequests.Inc()
 		w.Header().Set("Content-Type", "application/json")
 		var bb bytesutil.ByteBuffer
 		promscrape.WriteConfigData(&bb)
-		fmt.Fprintf(w, `{"status":"success","data":{"yaml":%q}}`, bb.B)
+		fmt.Fprintf(w, `{"status":"success","data":{"yaml":%s}}`, stringsutil.JSONString(string(bb.B)))
 		return true
 	case "/prometheus/-/reload", "/-/reload":
-		if !httpserver.CheckAuthFlag(w, r, reloadAuthKey.Get(), "reloadAuthKey") {
+		if !httpserver.CheckAuthFlag(w, r, reloadAuthKey) {
 			return true
 		}
 		promscrapeConfigReloadRequests.Inc()
@@ -395,7 +403,8 @@ var (
 	influxWriteRequests = metrics.NewCounter(`vm_http_requests_total{path="/influx/write", protocol="influx"}`)
 	influxWriteErrors   = metrics.NewCounter(`vm_http_request_errors_total{path="/influx/write", protocol="influx"}`)
 
-	influxQueryRequests = metrics.NewCounter(`vm_http_requests_total{path="/influx/query", protocol="influx"}`)
+	influxQueryRequests  = metrics.NewCounter(`vm_http_requests_total{path="/influx/query", protocol="influx"}`)
+	influxHealthRequests = metrics.NewCounter(`vm_http_requests_total{path="/influx/health", protocol="influx"}`)
 
 	datadogv1WriteRequests = metrics.NewCounter(`vm_http_requests_total{path="/datadog/api/v1/series", protocol="datadog"}`)
 	datadogv1WriteErrors   = metrics.NewCounter(`vm_http_request_errors_total{path="/datadog/api/v1/series", protocol="datadog"}`)
@@ -432,14 +441,4 @@ var (
 	promscrapeStatusConfigRequests = metrics.NewCounter(`vm_http_requests_total{path="/api/v1/status/config"}`)
 
 	promscrapeConfigReloadRequests = metrics.NewCounter(`vm_http_requests_total{path="/-/reload"}`)
-
-	_ = metrics.NewGauge(`vm_metrics_with_dropped_labels_total`, func() float64 {
-		return float64(storage.MetricsWithDroppedLabels.Load())
-	})
-	_ = metrics.NewGauge(`vm_too_long_label_names_total`, func() float64 {
-		return float64(storage.TooLongLabelNames.Load())
-	})
-	_ = metrics.NewGauge(`vm_too_long_label_values_total`, func() float64 {
-		return float64(storage.TooLongLabelValues.Load())
-	})
 )

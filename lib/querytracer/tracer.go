@@ -13,7 +13,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo"
 )
 
-var denyQueryTracing = flag.Bool("denyQueryTracing", false, "Whether to disable the ability to trace queries. See https://docs.victoriametrics.com/#query-tracing")
+var denyQueryTracing = flag.Bool("denyQueryTracing", false, "Whether to disable the ability to trace queries. See https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/#query-tracing")
 
 // Tracer represents query tracer.
 //
@@ -49,7 +49,7 @@ type Tracer struct {
 // If enabled isn't set, then all function calls to the returned object will be no-op.
 //
 // Done or Donef must be called when the tracer should be finished.
-func New(enabled bool, format string, args ...interface{}) *Tracer {
+func New(enabled bool, format string, args ...any) *Tracer {
 	if *denyQueryTracing || !enabled {
 		return nil
 	}
@@ -73,7 +73,7 @@ func (t *Tracer) Enabled() bool {
 // NewChild cannot be called from concurrent goroutines.
 // Create children tracers from a single goroutine and then pass them
 // to concurrent goroutines.
-func (t *Tracer) NewChild(format string, args ...interface{}) *Tracer {
+func (t *Tracer) NewChild(format string, args ...any) *Tracer {
 	if t == nil {
 		return nil
 	}
@@ -86,6 +86,38 @@ func (t *Tracer) NewChild(format string, args ...interface{}) *Tracer {
 	}
 	t.children = append(t.children, child)
 	return child
+}
+
+// NewOrphan returns a new Tracer without registering it as t child.
+//
+// The returned Tracer should be added to the parent manually via AddChild() call.
+//
+// NewOrphan cannot be called from concurrent goroutines.
+// Create orphaned Tracers from a single goroutine and then pass them
+// to concurrent goroutines instead.
+func NewOrphan(t *Tracer, format string, args ...any) *Tracer {
+	if t == nil {
+		return nil
+	}
+	if t.isDone.Load() {
+		panic(fmt.Errorf("BUG: NewOrphan() cannot be called after Donef(%q) call", t.message))
+	}
+	child := &Tracer{
+		message:   fmt.Sprintf(format, args...),
+		startTime: time.Now(),
+	}
+	return child
+}
+
+// AddChild registers given child tracer at t.
+func (t *Tracer) AddChild(child *Tracer) {
+	if t == nil {
+		return
+	}
+	if t.isDone.Load() {
+		panic(fmt.Errorf("BUG: AddChild() cannot be called after Donef(%q) call", t.message))
+	}
+	t.children = append(t.children, child)
 }
 
 // Done finishes t.
@@ -107,7 +139,7 @@ func (t *Tracer) Done() {
 //
 // Donef cannot be called multiple times.
 // Other Tracer functions cannot be called after Donef call.
-func (t *Tracer) Donef(format string, args ...interface{}) {
+func (t *Tracer) Donef(format string, args ...any) {
 	if t == nil {
 		return
 	}
@@ -122,7 +154,7 @@ func (t *Tracer) Donef(format string, args ...interface{}) {
 // Printf adds new fmt.Sprintf(format, args...) message to t.
 //
 // Printf cannot be called from concurrent goroutines.
-func (t *Tracer) Printf(format string, args ...interface{}) {
+func (t *Tracer) Printf(format string, args ...any) {
 	if t == nil {
 		return
 	}

@@ -1,0 +1,23 @@
+- match: 'tidb_tikvclient_request_seconds_bucket{store!="0"}'
+  interval: 15s
+  without: [type]
+  enable_windows: true
+  outputs: [total]
+
+- match: 'tidb_tikvclient_request_seconds_bucket{store!="0"}'
+  interval: 15s
+  without: [store]
+  enable_windows: true
+  outputs: [total]
+
+- match: 'test_metric'
+  interval: 15s
+  without: [a]
+  enable_windows: true
+  outputs: [total]
+
+- match: 'test_metric'
+  interval: 15s
+  without: [c]
+  enable_windows: true
+  outputs: [total]

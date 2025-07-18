@@ -2,10 +2,11 @@ package utils
 
 import (
 	"fmt"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/auth"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"strconv"
 	"strings"
+
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/auth"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 )
 
 func ParseURL(s string) (string, string, *auth.Token, error) {

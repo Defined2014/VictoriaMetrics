@@ -3,7 +3,6 @@ package datasource
 import (
 	"context"
 	"fmt"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/auth"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmalert/utils"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/auth"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promauth"
 )
 

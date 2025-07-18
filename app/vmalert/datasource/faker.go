@@ -2,10 +2,11 @@ package datasource
 
 import (
 	"context"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/auth"
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/auth"
 )
 
 // FakeQuerier is a mock querier that return predefined results and error message

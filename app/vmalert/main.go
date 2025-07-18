@@ -4,13 +4,14 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"gopkg.in/yaml.v2"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"gopkg.in/yaml.v2"
 
 	"github.com/VictoriaMetrics/metrics"
 

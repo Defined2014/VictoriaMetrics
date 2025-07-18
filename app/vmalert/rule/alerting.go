@@ -3,7 +3,6 @@ package rule
 import (
 	"context"
 	"fmt"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/auth"
 	"hash/fnv"
 	"sort"
 	"strings"
@@ -15,26 +14,27 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmalert/notifier"
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmalert/templates"
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmalert/utils"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/auth"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/prompbmarshal"
 )
 
 // AlertingRule is basic alert entity
 type AlertingRule struct {
-	Type          config.Type
-	RuleID        uint64
-	Name          string
-	Expr          string
-	For           time.Duration
-	KeepFiringFor time.Duration
-	Labels        map[string]string
-	Annotations   map[string]string
-	GroupID       uint64
-	GroupName     string
+	Type           config.Type
+	RuleID         uint64
+	Name           string
+	Expr           string
+	For            time.Duration
+	KeepFiringFor  time.Duration
+	Labels         map[string]string
+	Annotations    map[string]string
+	GroupID        uint64
+	GroupName      string
 	GroupAuthToken *auth.Token
-	File          string
-	EvalInterval  time.Duration
-	Debug         bool
+	File           string
+	EvalInterval   time.Duration
+	Debug          bool
 
 	q datasource.Querier
 
@@ -65,20 +65,20 @@ type alertingRuleMetrics struct {
 // NewAlertingRule creates a new AlertingRule
 func NewAlertingRule(qb datasource.QuerierBuilder, group *Group, cfg config.Rule) *AlertingRule {
 	ar := &AlertingRule{
-		Type:          group.Type,
-		RuleID:        cfg.ID,
-		Name:          cfg.Alert,
-		Expr:          cfg.Expr,
-		For:           cfg.For.Duration(),
-		KeepFiringFor: cfg.KeepFiringFor.Duration(),
-		Labels:        cfg.Labels,
-		Annotations:   cfg.Annotations,
-		GroupID:       group.ID(),
-		GroupName:     group.Name,
+		Type:           group.Type,
+		RuleID:         cfg.ID,
+		Name:           cfg.Alert,
+		Expr:           cfg.Expr,
+		For:            cfg.For.Duration(),
+		KeepFiringFor:  cfg.KeepFiringFor.Duration(),
+		Labels:         cfg.Labels,
+		Annotations:    cfg.Annotations,
+		GroupID:        group.ID(),
+		GroupName:      group.Name,
 		GroupAuthToken: group.AuthToken,
-		File:          group.File,
-		EvalInterval:  group.Interval,
-		Debug:         cfg.Debug,
+		File:           group.File,
+		EvalInterval:   group.Interval,
+		Debug:          cfg.Debug,
 		q: qb.BuildWithParams(datasource.QuerierParams{
 			DataSourceType:     group.Type.String(),
 			EvaluationInterval: group.Interval,

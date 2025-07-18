@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/auth"
 	"io"
 	"net/http"
 	"net/url"
 	"time"
 
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/auth"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promauth"
 )

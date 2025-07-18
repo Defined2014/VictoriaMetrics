@@ -2,9 +2,10 @@ package auth
 
 import (
 	"fmt"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"strconv"
 	"strings"
+
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 )
 
 // Token contains settings for request processing

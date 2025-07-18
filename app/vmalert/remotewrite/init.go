@@ -4,13 +4,13 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/auth"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmalert/utils"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/auth"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/flagutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/httputils"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 )
 
 var (

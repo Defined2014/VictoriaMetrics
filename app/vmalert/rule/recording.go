@@ -3,7 +3,6 @@ package rule
 import (
 	"context"
 	"fmt"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/auth"
 	"sort"
 	"strings"
 	"time"
@@ -11,6 +10,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmalert/config"
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmalert/datasource"
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmalert/utils"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/auth"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/prompbmarshal"
 )
 
@@ -18,15 +18,15 @@ import (
 // to evaluate configured Expression and
 // return TimeSeries as result.
 type RecordingRule struct {
-	Type      config.Type
-	RuleID    uint64
-	Name      string
-	Expr      string
-	Labels    map[string]string
-	GroupID   uint64
-	GroupName string
+	Type           config.Type
+	RuleID         uint64
+	Name           string
+	Expr           string
+	Labels         map[string]string
+	GroupID        uint64
+	GroupName      string
 	GroupAuthToken *auth.Token
-	File      string
+	File           string
 
 	q datasource.Querier
 
@@ -61,16 +61,16 @@ func (rr *RecordingRule) ID() uint64 {
 // NewRecordingRule creates a new RecordingRule
 func NewRecordingRule(qb datasource.QuerierBuilder, group *Group, cfg config.Rule) *RecordingRule {
 	rr := &RecordingRule{
-		Type:      group.Type,
-		RuleID:    cfg.ID,
-		Name:      cfg.Record,
-		Expr:      cfg.Expr,
-		Labels:    cfg.Labels,
-		GroupID:   group.ID(),
-		GroupName: group.Name,
+		Type:           group.Type,
+		RuleID:         cfg.ID,
+		Name:           cfg.Record,
+		Expr:           cfg.Expr,
+		Labels:         cfg.Labels,
+		GroupID:        group.ID(),
+		GroupName:      group.Name,
 		GroupAuthToken: group.AuthToken,
-		File:      group.File,
-		metrics:   &recordingRuleMetrics{},
+		File:           group.File,
+		metrics:        &recordingRuleMetrics{},
 		q: qb.BuildWithParams(datasource.QuerierParams{
 			DataSourceType:     group.Type.String(),
 			EvaluationInterval: group.Interval,

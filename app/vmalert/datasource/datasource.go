@@ -3,12 +3,13 @@ package datasource
 import (
 	"bytes"
 	"context"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/auth"
 	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
 	"time"
+
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/auth"
 )
 
 // Querier interface wraps Query and QueryRange methods

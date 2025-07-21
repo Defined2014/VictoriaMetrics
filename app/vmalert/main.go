@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"gopkg.in/yaml.v2"
+
 	"github.com/VictoriaMetrics/metrics"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmalert/config"
@@ -170,6 +172,11 @@ func main() {
 	if err != nil {
 		logger.Fatalf("cannot parse configuration file: %s", err)
 	}
+	content, err := yaml.Marshal(groupsCfg)
+	if err != nil {
+		logger.Fatalf("cannot marshal configuration file: %s", err)
+	}
+	logger.Infof("groupsCfg content is %v", string(content))
 
 	// Register SIGHUP handler for config re-read just before manager.start call.
 	// This guarantees that the config will be re-read if the signal arrives during manager.start call.

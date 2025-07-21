@@ -59,6 +59,8 @@ type Client struct {
 type Config struct {
 	// Addr of remote storage
 	Addr    string
+	BaseURL string
+	Suffix  string
 	AuthCfg *promauth.Config
 
 	// Concurrency defines number of readers that

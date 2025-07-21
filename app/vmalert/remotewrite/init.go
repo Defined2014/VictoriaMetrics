@@ -7,8 +7,10 @@ import (
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmalert/vmalertutil"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/auth"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/flagutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/httputil"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promauth"
 )
 
@@ -54,6 +56,10 @@ var (
 		`The endpoint parameters must be set in JSON format: {"param1":"value1",...,"paramN":"valueN"}`)
 	oauth2TokenURL = flag.String("remoteWrite.oauth2.tokenUrl", "", "Optional OAuth2 tokenURL to use for -notifier.url.")
 	oauth2Scopes   = flag.String("remoteWrite.oauth2.scopes", "", "Optional OAuth2 scopes to use for -notifier.url. Scopes must be delimited by ';'.")
+
+	Suffix           string
+	BaseURL          string
+	DefaultAuthToken *auth.Token
 )
 
 // InitSecretFlags must be called after flag.Parse and before any logging
@@ -69,6 +75,15 @@ func Init(ctx context.Context) (*Client, error) {
 	if *addr == "" {
 		return nil, nil
 	}
+
+	var err error
+	BaseURL, Suffix, DefaultAuthToken, err = vmalertutil.ParseURL(*addr)
+	if err != nil {
+		return nil, fmt.Errorf("wrong format of remotewrite.url: %v", *addr)
+	} else {
+		logger.Infof("DEBUG BaseURL = %s, Suffix = %s, DefaultAuthToken = [%d:%d]", BaseURL, Suffix, DefaultAuthToken.AccountID, DefaultAuthToken.ProjectID)
+	}
+
 	if err := httputil.CheckURL(*addr); err != nil {
 		return nil, fmt.Errorf("invalid -remoteWrite.url: %w", err)
 	}
@@ -93,6 +108,8 @@ func Init(ctx context.Context) (*Client, error) {
 
 	return NewClient(ctx, Config{
 		Addr:          *addr,
+		BaseURL:       BaseURL,
+		Suffix:        Suffix,
 		AuthCfg:       authCfg,
 		Concurrency:   *concurrency,
 		MaxQueueSize:  *maxQueueSize,

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmalert/vmalertutil"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/auth"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promauth"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/prompbmarshal"
 )
@@ -116,14 +117,17 @@ func TestVMInstantQuery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected: %s", err)
 	}
-	s := NewPrometheusClient(srv.URL, authCfg, false, srv.Client())
+	s := NewPrometheusClient(srv.URL, "", authCfg, false, srv.Client())
 
 	p := datasourcePrometheus
 	pq := s.BuildWithParams(QuerierParams{DataSourceType: string(p), EvaluationInterval: 15 * time.Second})
 	ts := time.Now()
 
 	expErr := func(query, err string) {
-		_, _, gotErr := pq.Query(ctx, query, ts)
+		_, _, gotErr := pq.Query(ctx, query, ts, &auth.Token{
+			AccountID: 111,
+			ProjectID: 222,
+		})
 		if gotErr == nil {
 			t.Fatalf("expected %q got nil", err)
 		}
@@ -138,7 +142,10 @@ func TestVMInstantQuery(t *testing.T) {
 	expErr(vmQuery, "unknown status")               // 3
 	expErr(vmQuery, "unexpected end of JSON input") // 4
 
-	res, _, err := pq.Query(ctx, vmQuery, ts) // 5 - vector
+	res, _, err := pq.Query(ctx, vmQuery, ts, &auth.Token{
+		AccountID: 111,
+		ProjectID: 222,
+	}) // 5 - vector
 	if err != nil {
 		t.Fatalf("unexpected %s", err)
 	}
@@ -159,7 +166,10 @@ func TestVMInstantQuery(t *testing.T) {
 	}
 	metricsEqual(t, res.Data, expected)
 
-	res, req, err := pq.Query(ctx, vmQuery, ts) // 6 - scalar
+	res, req, err := pq.Query(ctx, vmQuery, ts, &auth.Token{
+		AccountID: 111,
+		ProjectID: 222,
+	}) // 6 - scalar
 	if err != nil {
 		t.Fatalf("unexpected %s", err)
 	}
@@ -184,7 +194,10 @@ func TestVMInstantQuery(t *testing.T) {
 			res.SeriesFetched)
 	}
 
-	res, _, err = pq.Query(ctx, vmQuery, ts) // 7 - scalar with stats
+	res, _, err = pq.Query(ctx, vmQuery, ts, &auth.Token{
+		AccountID: 111,
+		ProjectID: 222,
+	}) // 7 - scalar with stats
 	if err != nil {
 		t.Fatalf("unexpected %s", err)
 	}
@@ -205,7 +218,10 @@ func TestVMInstantQuery(t *testing.T) {
 			*res.SeriesFetched)
 	}
 
-	res, _, err = pq.Query(ctx, vmQuery, ts) // 8
+	res, _, err = pq.Query(ctx, vmQuery, ts, &auth.Token{
+		AccountID: 111,
+		ProjectID: 222,
+	}) // 8
 	if err != nil {
 		t.Fatalf("unexpected %s", err)
 	}
@@ -216,7 +232,10 @@ func TestVMInstantQuery(t *testing.T) {
 	// test graphite
 	gq := s.BuildWithParams(QuerierParams{DataSourceType: string(datasourceGraphite)})
 
-	res, _, err = gq.Query(ctx, queryRender, ts) // 9 - graphite
+	res, _, err = gq.Query(ctx, queryRender, ts, &auth.Token{
+		AccountID: 111,
+		ProjectID: 222,
+	}) // 9 - graphite
 	if err != nil {
 		t.Fatalf("unexpected %s", err)
 	}
@@ -238,7 +257,10 @@ func TestVMInstantQuery(t *testing.T) {
 
 	expErr(vlogsQuery, "error parsing response") // 10
 
-	res, _, err = pq.Query(ctx, vlogsQuery, ts) // 11
+	res, _, err = pq.Query(ctx, vlogsQuery, ts, &auth.Token{
+		AccountID: 111,
+		ProjectID: 222,
+	}) // 11
 	if err != nil {
 		t.Fatalf("unexpected %s", err)
 	}
@@ -291,11 +313,14 @@ func TestVMInstantQueryWithRetry(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	s := NewPrometheusClient(srv.URL, nil, false, srv.Client())
+	s := NewPrometheusClient(srv.URL, "", nil, false, srv.Client())
 	pq := s.BuildWithParams(QuerierParams{DataSourceType: string(datasourcePrometheus)})
 
 	expErr := func(err string) {
-		_, _, gotErr := pq.Query(ctx, vmQuery, time.Now())
+		_, _, gotErr := pq.Query(ctx, vmQuery, time.Now(), &auth.Token{
+			AccountID: 111,
+			ProjectID: 222,
+		})
 		if gotErr == nil {
 			t.Fatalf("expected %q got nil", err)
 		}
@@ -305,7 +330,10 @@ func TestVMInstantQueryWithRetry(t *testing.T) {
 	}
 
 	expValue := func(v float64) {
-		res, _, err := pq.Query(ctx, vmQuery, time.Now())
+		res, _, err := pq.Query(ctx, vmQuery, time.Now(), &auth.Token{
+			AccountID: 111,
+			ProjectID: 222,
+		})
 		if err != nil {
 			t.Fatalf("unexpected %s", err)
 		}
@@ -434,19 +462,28 @@ func TestVMRangeQuery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected: %s", err)
 	}
-	s := NewPrometheusClient(srv.URL, authCfg, false, srv.Client())
+	s := NewPrometheusClient(srv.URL, "", authCfg, false, srv.Client())
 
 	pq := s.BuildWithParams(QuerierParams{DataSourceType: string(datasourcePrometheus), EvaluationInterval: 15 * time.Second})
 
-	_, err = pq.QueryRange(ctx, vmQuery, time.Now(), time.Time{})
+	_, err = pq.QueryRange(ctx, vmQuery, time.Now(), time.Time{}, &auth.Token{
+		AccountID: 111,
+		ProjectID: 222,
+	})
 	expectError(t, err, "is missing")
 
-	_, err = pq.QueryRange(ctx, vmQuery, time.Time{}, time.Now())
+	_, err = pq.QueryRange(ctx, vmQuery, time.Time{}, time.Now(), &auth.Token{
+		AccountID: 111,
+		ProjectID: 222,
+	})
 	expectError(t, err, "is missing")
 
 	start, end := time.Now().Add(-time.Minute), time.Now()
 
-	res, err := pq.QueryRange(ctx, vmQuery, start, end)
+	res, err := pq.QueryRange(ctx, vmQuery, start, end, &auth.Token{
+		AccountID: 111,
+		ProjectID: 222,
+	})
 	if err != nil {
 		t.Fatalf("unexpected %s", err)
 	}
@@ -466,18 +503,27 @@ func TestVMRangeQuery(t *testing.T) {
 	// test unsupported graphite
 	gq := s.BuildWithParams(QuerierParams{DataSourceType: string(datasourceGraphite)})
 
-	_, err = gq.QueryRange(ctx, queryRender, start, end)
+	_, err = gq.QueryRange(ctx, queryRender, start, end, &auth.Token{
+		AccountID: 111,
+		ProjectID: 222,
+	})
 	expectError(t, err, "is not supported")
 
 	// unsupported logsql
 	gq = s.BuildWithParams(QuerierParams{DataSourceType: string(datasourceVLogs), EvaluationInterval: 60 * time.Second})
 
-	res, err = gq.QueryRange(ctx, vlogsRangeQuery, start, end)
+	res, err = gq.QueryRange(ctx, vlogsRangeQuery, start, end, &auth.Token{
+		AccountID: 111,
+		ProjectID: 222,
+	})
 	expectError(t, err, "is not supported")
 
 	// supported logsql
 	gq = s.BuildWithParams(QuerierParams{DataSourceType: string(datasourceVLogs), EvaluationInterval: 60 * time.Second, ApplyIntervalAsTimeFilter: true})
-	res, err = gq.QueryRange(ctx, vlogsRangeQuery, start, end)
+	res, err = gq.QueryRange(ctx, vlogsRangeQuery, start, end, &auth.Token{
+		AccountID: 111,
+		ProjectID: 222,
+	})
 	if err != nil {
 		t.Fatalf("unexpected %s", err)
 	}
@@ -503,7 +549,10 @@ func TestRequestParams(t *testing.T) {
 	f := func(isQueryRange bool, c *Client, checkFn func(t *testing.T, r *http.Request)) {
 		t.Helper()
 
-		req, err := c.newRequest(ctx)
+		req, err := c.newRequest(ctx, &auth.Token{
+			AccountID: 111,
+			ProjectID: 222,
+		})
 		if err != nil {
 			t.Fatalf("error in newRequest: %s", err)
 		}
@@ -754,7 +803,10 @@ func TestHeaders(t *testing.T) {
 		t.Helper()
 
 		vm := vmFn()
-		req, err := vm.newQueryRequest(ctx, "foo", time.Now())
+		req, err := vm.newQueryRequest(ctx, "foo", time.Now(), &auth.Token{
+			AccountID: 111,
+			ProjectID: 222,
+		})
 		if err != nil {
 			t.Fatalf("error in newQueryRequest: %s", err)
 		}
@@ -767,7 +819,7 @@ func TestHeaders(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Error get auth config: %s", err)
 		}
-		return NewPrometheusClient("", cfg, false, nil)
+		return NewPrometheusClient("", "", cfg, false, nil)
 	}, func(t *testing.T, r *http.Request) {
 		u, p, _ := r.BasicAuth()
 		checkEqualString(t, "foo", u)
@@ -780,7 +832,7 @@ func TestHeaders(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Error get auth config: %s", err)
 		}
-		return NewPrometheusClient("", cfg, false, nil)
+		return NewPrometheusClient("", "", cfg, false, nil)
 	}, func(t *testing.T, r *http.Request) {
 		reqToken := r.Header.Get("Authorization")
 		splitToken := strings.Split(reqToken, "Bearer ")
@@ -793,7 +845,7 @@ func TestHeaders(t *testing.T) {
 
 	// custom extraHeaders
 	f(func() *Client {
-		c := NewPrometheusClient("", nil, false, nil)
+		c := NewPrometheusClient("", "", nil, false, nil)
 		c.extraHeaders = []keyValue{
 			{key: "Foo", value: "bar"},
 			{key: "Baz", value: "qux"},
@@ -812,7 +864,7 @@ func TestHeaders(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Error get auth config: %s", err)
 		}
-		c := NewPrometheusClient("", cfg, false, nil)
+		c := NewPrometheusClient("", "", cfg, false, nil)
 		c.extraHeaders = []keyValue{
 			{key: "Authorization", value: "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ=="},
 		}

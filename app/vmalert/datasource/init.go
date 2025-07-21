@@ -5,12 +5,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmalert/vmalertutil"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/auth"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/flagutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/httputil"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promauth"
 )
 
@@ -56,6 +57,10 @@ var (
 		`If true, disables HTTP keep-alive and will only use the connection to the server for a single HTTP request.`)
 	roundDigits = flag.Int("datasource.roundDigits", 0, `Adds "round_digits" GET param to datasource requests which limits the number of digits after the decimal point in response values. `+
 		`Only valid for VictoriaMetrics as the datasource.`)
+
+	Suffix           string
+	BaseURL          string
+	DefaultAuthToken *auth.Token
 )
 
 // InitSecretFlags must be called after flag.Parse and before any logging
@@ -82,6 +87,15 @@ func Init(extraParams url.Values) (QuerierBuilder, error) {
 	if err := httputil.CheckURL(*addr); err != nil {
 		return nil, fmt.Errorf("invalid -datasource.url: %w", err)
 	}
+
+	var err error
+	BaseURL, Suffix, DefaultAuthToken, err = vmalertutil.ParseURL(*addr)
+	if err != nil {
+		return nil, fmt.Errorf("wrong format of datasource.url: %v", *addr)
+	} else {
+		logger.Infof("DEBUG BaseURL = %s, Suffix = %s, DefaultAuthToken = [%d:%d]", BaseURL, Suffix, DefaultAuthToken.AccountID, DefaultAuthToken.ProjectID)
+	}
+
 	tr, err := promauth.NewTLSTransport(*tlsCertFile, *tlsKeyFile, *tlsCAFile, *tlsServerName, *tlsInsecureSkipVerify, "vmalert_datasource")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create transport for -datasource.url=%q: %w", *addr, err)
@@ -120,7 +134,8 @@ func Init(extraParams url.Values) (QuerierBuilder, error) {
 	return &Client{
 		c:                &http.Client{Transport: tr},
 		authCfg:          authCfg,
-		datasourceURL:    strings.TrimSuffix(*addr, "/"),
+		baseURL:          BaseURL,
+		suffix:           Suffix,
 		appendTypePrefix: *appendTypePrefix,
 		queryStep:        *queryStep,
 		extraParams:      extraParams,

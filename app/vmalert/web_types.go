@@ -108,12 +108,20 @@ type apiGroup struct {
 	EvalOffset float64 `json:"eval_offset,omitempty"`
 	// EvalDelay will adjust the `time` parameter of rule evaluation requests to compensate intentional query delay from datasource.
 	EvalDelay float64 `json:"eval_delay,omitempty"`
+
+	AuthToken *APIAuthToken `json:"auth_token"`
+
 	// Unhealthy unhealthy rules count
 	Unhealthy int
 	// Healthy passing rules count
 	Healthy int
 	// NoMatch not matching rules count
 	NoMatch int
+}
+
+type APIAuthToken struct {
+	AccountID uint32 `json:"account_id"`
+	ProjectID uint32 `json:"project_id"`
 }
 
 // groupAlerts represents a group of alerts for WEB view

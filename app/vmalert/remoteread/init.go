@@ -8,8 +8,10 @@ import (
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmalert/datasource"
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmalert/vmalertutil"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/auth"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/flagutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/httputil"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promauth"
 )
 
@@ -51,6 +53,10 @@ var (
 		`The endpoint parameters must be set in JSON format: {"param1":"value1",...,"paramN":"valueN"}`)
 	oauth2TokenURL = flag.String("remoteRead.oauth2.tokenUrl", "", "Optional OAuth2 tokenURL to use for -remoteRead.url. ")
 	oauth2Scopes   = flag.String("remoteRead.oauth2.scopes", "", "Optional OAuth2 scopes to use for -remoteRead.url. Scopes must be delimited by ';'.")
+
+	Suffix           string
+	BaseURL          string
+	DefaultAuthToken *auth.Token
 )
 
 // InitSecretFlags must be called after flag.Parse and before any logging
@@ -66,6 +72,15 @@ func Init() (datasource.QuerierBuilder, error) {
 	if *addr == "" {
 		return nil, nil
 	}
+
+	var err error
+	BaseURL, Suffix, DefaultAuthToken, err = vmalertutil.ParseURL(*addr)
+	if err != nil {
+		return nil, fmt.Errorf("wrong format of remoteread.url: %v", *addr)
+	} else {
+		logger.Infof("DEBUG BaseURL = %s, Suffix = %s, DefaultAuthToken = [%d:%d]", BaseURL, Suffix, DefaultAuthToken.AccountID, DefaultAuthToken.ProjectID)
+	}
+
 	if err := httputil.CheckURL(*addr); err != nil {
 		return nil, fmt.Errorf("invalid -remoteRead.url: %w", err)
 	}
@@ -88,5 +103,5 @@ func Init() (datasource.QuerierBuilder, error) {
 		return nil, fmt.Errorf("failed to configure auth: %w", err)
 	}
 	c := &http.Client{Transport: tr}
-	return datasource.NewPrometheusClient(*addr, authCfg, false, c), nil
+	return datasource.NewPrometheusClient(BaseURL, Suffix, authCfg, false, c), nil
 }

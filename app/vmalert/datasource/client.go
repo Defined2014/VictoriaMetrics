@@ -7,9 +7,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/auth"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/netutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promauth"
@@ -41,9 +41,12 @@ func toDatasourceType(s string) datasourceType {
 // supported clients are enumerated in datasourceType.
 // WARN: when adding a new field, remember to check if Clone() method needs to be updated.
 type Client struct {
-	c                *http.Client
-	authCfg          *promauth.Config
-	datasourceURL    string
+	c       *http.Client
+	authCfg *promauth.Config
+
+	baseURL string
+	suffix  string
+
 	appendTypePrefix bool
 	queryStep        time.Duration
 	dataSourceType   datasourceType
@@ -73,9 +76,12 @@ type keyValue struct {
 // Clone clones shared http client and other configuration to the new client.
 func (c *Client) Clone() *Client {
 	ns := &Client{
-		c:                c.c,
-		authCfg:          c.authCfg,
-		datasourceURL:    c.datasourceURL,
+		c:       c.c,
+		authCfg: c.authCfg,
+
+		baseURL: c.baseURL,
+		suffix:  c.suffix,
+
 		appendTypePrefix: c.appendTypePrefix,
 		queryStep:        c.queryStep,
 
@@ -138,11 +144,12 @@ func (c *Client) BuildWithParams(params QuerierParams) Querier {
 }
 
 // NewPrometheusClient returns a new prometheus datasource client.
-func NewPrometheusClient(baseURL string, authCfg *promauth.Config, appendTypePrefix bool, c *http.Client) *Client {
+func NewPrometheusClient(baseURL string, suffix string, authCfg *promauth.Config, appendTypePrefix bool, c *http.Client) *Client {
 	return &Client{
 		c:                c,
 		authCfg:          authCfg,
-		datasourceURL:    strings.TrimSuffix(baseURL, "/"),
+		baseURL:          baseURL,
+		suffix:           suffix,
 		appendTypePrefix: appendTypePrefix,
 		queryStep:        *queryStep,
 		dataSourceType:   datasourcePrometheus,
@@ -151,8 +158,8 @@ func NewPrometheusClient(baseURL string, authCfg *promauth.Config, appendTypePre
 }
 
 // Query executes the given query and returns parsed response
-func (c *Client) Query(ctx context.Context, query string, ts time.Time) (Result, *http.Request, error) {
-	req, err := c.newQueryRequest(ctx, query, ts)
+func (c *Client) Query(ctx context.Context, query string, ts time.Time, at *auth.Token) (Result, *http.Request, error) {
+	req, err := c.newQueryRequest(ctx, query, ts, at)
 	if err != nil {
 		return Result{}, nil, err
 	}
@@ -164,7 +171,7 @@ func (c *Client) Query(ctx context.Context, query string, ts time.Time) (Result,
 		}
 		// Something in the middle between client and datasource might be closing
 		// the connection. So we do a one more attempt in hope request will succeed.
-		req, err = c.newQueryRequest(ctx, query, ts)
+		req, err = c.newQueryRequest(ctx, query, ts, at)
 		if err != nil {
 			return Result{}, nil, fmt.Errorf("second attempt: %w", err)
 		}
@@ -194,7 +201,7 @@ func (c *Client) Query(ctx context.Context, query string, ts time.Time) (Result,
 // QueryRange executes the given query on the given time range.
 // For Prometheus type see https://prometheus.io/docs/prometheus/latest/querying/api/#range-queries
 // Graphite type isn't supported.
-func (c *Client) QueryRange(ctx context.Context, query string, start, end time.Time) (res Result, err error) {
+func (c *Client) QueryRange(ctx context.Context, query string, start, end time.Time, at *auth.Token) (res Result, err error) {
 	if c.dataSourceType == datasourceGraphite {
 		return res, fmt.Errorf("%q is not supported for QueryRange", c.dataSourceType)
 	}
@@ -208,7 +215,7 @@ func (c *Client) QueryRange(ctx context.Context, query string, start, end time.T
 	if end.IsZero() {
 		return res, fmt.Errorf("end param is missing")
 	}
-	req, err := c.newQueryRangeRequest(ctx, query, start, end)
+	req, err := c.newQueryRangeRequest(ctx, query, start, end, at)
 	if err != nil {
 		return res, err
 	}
@@ -220,7 +227,7 @@ func (c *Client) QueryRange(ctx context.Context, query string, start, end time.T
 		}
 		// Something in the middle between client and datasource might be closing
 		// the connection. So we do a one more attempt in hope request will succeed.
-		req, err = c.newQueryRangeRequest(ctx, query, start, end)
+		req, err = c.newQueryRangeRequest(ctx, query, start, end, at)
 		if err != nil {
 			return res, fmt.Errorf("second attempt: %w", err)
 		}
@@ -265,10 +272,10 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 	return resp, nil
 }
 
-func (c *Client) newQueryRangeRequest(ctx context.Context, query string, start, end time.Time) (*http.Request, error) {
-	req, err := c.newRequest(ctx)
+func (c *Client) newQueryRangeRequest(ctx context.Context, query string, start, end time.Time, at *auth.Token) (*http.Request, error) {
+	req, err := c.newRequest(ctx, at)
 	if err != nil {
-		return nil, fmt.Errorf("cannot create query_range request to datasource %q: %w", c.datasourceURL, err)
+		return nil, fmt.Errorf("cannot create query_range request to datasource %q: %w", c.baseURL+c.suffix, err)
 	}
 	switch c.dataSourceType {
 	case datasourcePrometheus:
@@ -281,10 +288,10 @@ func (c *Client) newQueryRangeRequest(ctx context.Context, query string, start, 
 	return req, nil
 }
 
-func (c *Client) newQueryRequest(ctx context.Context, query string, ts time.Time) (*http.Request, error) {
-	req, err := c.newRequest(ctx)
+func (c *Client) newQueryRequest(ctx context.Context, query string, ts time.Time, at *auth.Token) (*http.Request, error) {
+	req, err := c.newRequest(ctx, at)
 	if err != nil {
-		return nil, fmt.Errorf("cannot create query request to datasource %q: %w", c.datasourceURL, err)
+		return nil, fmt.Errorf("cannot create query request to datasource %q: %w", c.baseURL+c.suffix, err)
 	}
 	switch c.dataSourceType {
 	case datasourcePrometheus:
@@ -299,10 +306,12 @@ func (c *Client) newQueryRequest(ctx context.Context, query string, ts time.Time
 	return req, nil
 }
 
-func (c *Client) newRequest(ctx context.Context) (*http.Request, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.datasourceURL, nil)
+func (c *Client) newRequest(ctx context.Context, at *auth.Token) (*http.Request, error) {
+	requestURL := fmt.Sprintf("%s/%s/%s", c.baseURL, at.String(), c.suffix)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, nil)
 	if err != nil {
-		logger.Panicf("BUG: unexpected error from http.NewRequest(%q): %s", c.datasourceURL, err)
+		logger.Panicf("BUG: unexpected error from http.NewRequest(%q): %s", requestURL, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.authCfg != nil {

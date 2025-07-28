@@ -5,6 +5,7 @@ on:
     branches:
       - cluster
       - master
+      - 'release-*'
     paths:
       - '**.go'
       - '**/Dockerfile'
@@ -15,6 +16,7 @@ on:
     branches:
       - cluster
       - master
+      - 'release-*'
     paths:
       - '**.go'
       - '**/Dockerfile'

@@ -5,12 +5,14 @@ on:
     branches:
       - cluster
       - master
+      - 'release-*'
     paths:
       - '**.go'
   pull_request:
     branches:
       - cluster
       - master
+      - 'release-*'
     paths:
       - '**.go'
 
@@ -53,7 +55,6 @@ jobs:
 
   test:
     name: test
-    needs: lint
     runs-on: ubuntu-latest
 
     strategy:
@@ -94,7 +95,7 @@ jobs:
 
   integration-test:
     name: integration-test
-    needs: [lint, test]
+    needs: test
     runs-on: ubuntu-latest
 
     steps:

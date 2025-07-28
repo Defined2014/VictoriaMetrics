@@ -5,6 +5,7 @@ on:
     branches:
       - cluster
       - master
+      - 'release-*'
     paths:
       - '**.go'
       - '**/Dockerfile*' # The trailing * is for app/vmui/Dockerfile-*.
@@ -13,6 +14,7 @@ on:
     branches:
       - cluster
       - master
+      - 'release-*'
     paths:
       - '**.go'
       - '**/Dockerfile*' # The trailing * is for app/vmui/Dockerfile-*.

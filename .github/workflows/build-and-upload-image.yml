@@ -1,0 +1,267 @@
+name: Build And Upload Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      git-ref:
+        description: git ref
+        required: true
+      components:
+        description: 'Which components want to build and upload'
+        required: true
+        type: choice
+        options:
+          - vmalert
+      tag:
+        description: 'The image tag. If empty, the default value will be used'
+        type: string
+        required: false
+      env:
+        description: 'Target environment (dev/staging/prod)'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+      cloud-providers:
+        description: 'Cloud providers to sync to (comma-separated: aws,gcp,azure,alicloud or "all")'
+        required: true
+        default: 'all'
+        type: string
+
+jobs:
+  prepare:
+    name: Prepare sync targets
+    runs-on: self-hosted
+    outputs:
+      AWS_ENABLED: ${{ steps.check_providers.outputs.aws_enabled }}
+      GCP_ENABLED: ${{ steps.check_providers.outputs.gcp_enabled }}
+      AZURE_ENABLED: ${{ steps.check_providers.outputs.azure_enabled }}
+      ALICLOUD_ENABLED: ${{ steps.check_providers.outputs.alicloud_enabled }}
+      AWS_ROLE_ARN: ${{ steps.set_config.outputs.aws_role_arn }}
+      GCP_PROJECT_ID: ${{ steps.set_config.outputs.gcp_project_id }}
+      GCP_SRV_ACCT: ${{ steps.set_config.outputs.gcp_srv_acct }}
+      GCP_IDENTITY: ${{ steps.set_config.outputs.gcp_identity_provider }}
+      AZURE_SUBSCRIPTION_ID: ${{ steps.set_config.outputs.azure_subscription_id }}
+      AZURE_ACR_NAME: ${{ steps.set_config.outputs.azure_acr_name }}
+      ALICLOUD_CR_NAME: ${{ steps.set_config.outputs.alicloud_cr_name }}
+    steps:
+      - name: Check cloud providers
+        id: check_providers
+        run: |
+          providers="${{ github.event.inputs.cloud-providers }}"
+
+          if [[ "$providers" == "all" ]]; then
+            echo "aws_enabled=true" >> $GITHUB_OUTPUT
+            echo "gcp_enabled=true" >> $GITHUB_OUTPUT
+            echo "azure_enabled=true" >> $GITHUB_OUTPUT
+            echo "alicloud_enabled=true" >> $GITHUB_OUTPUT
+          else
+            echo "aws_enabled=false" >> $GITHUB_OUTPUT
+            echo "gcp_enabled=false" >> $GITHUB_OUTPUT
+            echo "azure_enabled=false" >> $GITHUB_OUTPUT
+            echo "alicloud_enabled=false" >> $GITHUB_OUTPUT
+
+            IFS=',' read -ra PROVIDER_ARRAY <<< "$providers"
+            for provider in "${PROVIDER_ARRAY[@]}"; do
+              case $provider in
+                aws)
+                  echo "aws_enabled=true" >> $GITHUB_OUTPUT
+                  ;;
+                gcp)
+                  echo "gcp_enabled=true" >> $GITHUB_OUTPUT
+                  ;;
+                azure)
+                  echo "azure_enabled=true" >> $GITHUB_OUTPUT
+                  ;;
+                alicloud)
+                  echo "alicloud_enabled=true" >> $GITHUB_OUTPUT
+                  ;;
+              esac
+            done
+          fi
+
+      - name: Set environment configuration
+        id: set_config
+        run: |
+          env="${{ github.event.inputs.env }}"
+
+          if [[ $env == "prod" ]]; then
+            echo "aws_role_arn=arn:aws:iam::557537366020:role/cicd-role" >> $GITHUB_OUTPUT
+            echo "gcp_project_id=gcp-autonomous-prod" >> $GITHUB_OUTPUT
+            echo "gcp_srv_acct=regional-server@gcp-autonomous-prod.iam.gserviceaccount.com" >> $GITHUB_OUTPUT
+            echo "gcp_identity_provider=projects/333155956695/locations/global/workloadIdentityPools/o11y-prod-workload-identity-pool/providers/o11y-prod-provider" >> $GITHUB_OUTPUT
+            echo "azure_subscription_id=01f5d24b-a99c-45e1-a3e2-5ddc1e5bb71d" >> $GITHUB_OUTPUT
+            echo "azure_acr_name=o11yprod.azurecr.io" >> $GITHUB_OUTPUT
+            echo "alicloud_cr_name=o11-prod-repo-registry.ap-southeast-1.cr.aliyuncs.com" >> $GITHUB_OUTPUT
+          else
+            echo "aws_role_arn=arn:aws:iam::552185537300:role/cicd-role" >> $GITHUB_OUTPUT
+            echo "gcp_project_id=gcp-autonomous-dev" >> $GITHUB_OUTPUT
+            echo "gcp_srv_acct=regional-server@gcp-autonomous-dev.iam.gserviceaccount.com" >> $GITHUB_OUTPUT
+            echo "gcp_identity_provider=projects/871243851896/locations/global/workloadIdentityPools/o11y-dev-workload-identity-pool/providers/o11y-dev-provider" >> $GITHUB_OUTPUT
+            echo "azure_subscription_id=e2663e34-801d-414c-9f84-ff1d0bca7627" >> $GITHUB_OUTPUT
+            echo "azure_acr_name=o11ydeveastus.azurecr.io" >> $GITHUB_OUTPUT
+            echo "alicloud_cr_name=o11-dev-staging-repo-registry.ap-southeast-1.cr.aliyuncs.com" >> $GITHUB_OUTPUT
+          fi
+
+  build-and-upload:
+    needs: [prepare]
+    runs-on: self-hosted
+    env:
+      AWS_REGION: us-west-2
+      AWS_ROLE_ARN: ${{ needs.prepare.outputs.AWS_ROLE_ARN }}
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+    steps:
+      - name: check out code
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ github.event.inputs.git-ref || github.sha }}
+
+      - name: cache environment
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: setup go
+        uses: actions/setup-go@v3
+        with:
+          go-version: "1.24.x"
+        env:
+          GOPRIVATE: "github.com/tidbcloud,github.com/pingcap/dbaas"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Install AWS CLI
+        if: needs.prepare.outputs.AWS_ENABLED == 'true'
+        run: |
+          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          unzip -q awscliv2.zip
+          sudo ./aws/install --update
+
+      - name: Login to ECR
+        if: needs.prepare.outputs.AWS_ENABLED == 'true'
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Authenticate to Google Cloud
+        if: needs.prepare.outputs.GCP_ENABLED == 'true'
+        uses: google-github-actions/auth@v1
+        with:
+          service_account: ${{ needs.prepare.outputs.GCP_SRV_ACCT }}
+          workload_identity_provider: ${{ needs.prepare.outputs.GCP_IDENTITY }}
+
+      - name: Set up Cloud SDK
+        if: needs.prepare.outputs.GCP_ENABLED == 'true'
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ needs.prepare.outputs.GCP_PROJECT_ID }}
+
+      - name: Configure Docker for GCP
+        if: needs.prepare.outputs.GCP_ENABLED == 'true'
+        run: |
+          gcloud auth configure-docker us-west1-docker.pkg.dev --quiet
+
+      - name: Install Azure CLI
+        if: needs.prepare.outputs.AZURE_ENABLED == 'true'
+        uses: pietrobolcato/install-azure-cli-action@v1.0.1
+
+      - name: Azure Login
+        if: needs.prepare.outputs.AZURE_ENABLED == 'true'
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ needs.prepare.outputs.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          AZURE_FEDERATED_TOKEN=$(cat $AZURE_FEDERATED_TOKEN_FILE)
+          az login --federated-token $AZURE_FEDERATED_TOKEN --service-principal -u $AZURE_CLIENT_ID -t $AZURE_TENANT_ID
+          az account show
+          az account set --subscription $AZURE_SUBSCRIPTION_ID
+          az acr login --name ${{ needs.prepare.outputs.AZURE_ACR_NAME }}
+
+      - name: Setup Aliyun CLI
+        if: needs.prepare.outputs.ALICLOUD_ENABLED == 'true'
+        uses: aliyun/setup-aliyun-cli-action@v1
+        with:
+          version: 3.0.251
+
+      - name: Configure Aliyun CLI
+        if: needs.prepare.outputs.ALICLOUD_ENABLED == 'true'
+        env:
+          AUDIENCE: gcp
+          ALICLOUD_CICD_RAM_ROLE_DEV: acs:ram::5092239846523038:role/cicd-role
+          ALICLOUD_CICD_OIDC_PROVIDER_DEV: acs:ram::5092239846523038:oidc-provider/cicd-gcp-oidc-provider
+          ALICLOUD_CICD_RAM_ROLE_PROD: acs:ram::5480039859161595:role/cicd-role
+          ALICLOUD_CICD_OIDC_PROVIDER_PROD: acs:ram::5480039859161595:oidc-provider/cicd-gcp-oidc-provider
+          ALICLOUD_REGION: ap-southeast-1
+        run: |
+          env="${{ github.event.inputs.env }}"
+
+          if [[ $env != "prod" ]]; then
+            aliyun configure set \
+              --profile default \
+              --mode OIDC \
+              --region ${ALICLOUD_REGION} \
+              --sts-region us-west-1 \
+              --oidc-provider-arn ${ALICLOUD_CICD_OIDC_PROVIDER_DEV} \
+              --oidc-token-file ${AWS_WEB_IDENTITY_TOKEN_FILE} \
+              --ram-role-arn ${ALICLOUD_CICD_RAM_ROLE_DEV} \
+              --role-session-name image-sync-session
+          else
+            aliyun configure set \
+              --profile default \
+              --mode OIDC \
+              --region ${ALICLOUD_REGION} \
+              --sts-region us-west-1 \
+              --oidc-provider-arn ${ALICLOUD_CICD_OIDC_PROVIDER_PROD} \
+              --oidc-token-file ${AWS_WEB_IDENTITY_TOKEN_FILE} \
+              --ram-role-arn ${ALICLOUD_CICD_RAM_ROLE_PROD} \
+              --role-session-name image-sync-session
+          fi
+
+      - name: Login to Alibaba Cloud Container Registry
+        if: needs.prepare.outputs.ALICLOUD_ENABLED == 'true'
+        env:
+          ALICLOUD_REGION: ap-southeast-1
+        run: |
+          instanceId=$(aliyun cr ListInstance --InstanceName tidbcloud --region ${ALICLOUD_REGION} --output cols=InstanceId rows=Instances|sed -n 3p)
+          aliyun cr GetAuthorizationToken --expired-seconds 21600 --InstanceId=${instanceId} --region ${ALICLOUD_REGION} --output cols=AuthorizationToken|sed -n 3p|docker login --username=cr_temp_user --password-stdin ${{ needs.prepare.outputs.ALICLOUD_CR_NAME }}
+
+      - name: Determine target registries
+        run: |
+          registries=""
+          if [[ "${{ needs.prepare.outputs.AWS_ENABLED }}" == "true" ]]; then
+            registries="$registries ${{ steps.login-ecr.outputs.registry }}"
+          fi
+          if [[ "${{ needs.prepare.outputs.GCP_ENABLED }}" == "true" ]]; then
+            registries="$registries us-west1-docker.pkg.dev/${{ needs.prepare.outputs.GCP_PROJECT_ID }}"
+          fi
+          if [[ "${{ needs.prepare.outputs.AZURE_ENABLED }}" == "true" ]]; then
+            registries="$registries ${{ needs.prepare.outputs.AZURE_ACR_NAME }}"
+          fi
+          if [[ "${{ needs.prepare.outputs.ALICLOUD_ENABLED }}" == "true" ]]; then
+            registries="$registries ${{ needs.prepare.outputs.ALICLOUD_CR_NAME }}/${{ github.event.inputs.env }}"
+          fi
+          echo "DOCKER_REGISTRIES=$registries" >> "$GITHUB_ENV"
+
+      - name: Build and Push Docker Images
+        if: env.DOCKER_REGISTRIES != ''
+        env:
+          DOCKER_REGISTRIES: ${{ env.DOCKER_REGISTRIES }}
+        run: |
+          if [[ -n "${{ github.event.inputs.tag }}" ]]; then
+            export PKG_TAG=${{ github.event.inputs.tag }}
+          fi
+
+          if [[ "${{ github.event.inputs.components }}" == "vmalert" ]]; then
+            make publish-vmalert-for-tidb-cloud
+          fi

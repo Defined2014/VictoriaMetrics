@@ -129,6 +129,30 @@ publish-via-docker:
 		$(APP_NAME)-linux-ppc64le-prod \
 		$(APP_NAME)-linux-386-prod
 
+publish-via-docker-for-tidbcloud:
+	$(MAKE_PARALLEL) app-via-docker-linux-amd64 \
+		app-via-docker-linux-arm64
+	$(DOCKER) buildx build \
+		--platform=linux/amd64,linux/arm64 \
+		--build-arg certs_image=$(CERTS_IMAGE) \
+		--build-arg root_image=$(ROOT_IMAGE) \
+		--build-arg APP_NAME=$(APP_NAME) \
+		--build-arg BINARY_SUFFIX="" \
+		--label "org.opencontainers.image.source=https://github.com/VictoriaMetrics/VictoriaMetrics" \
+		--label "org.opencontainers.image.documentation=https://docs.victoriametrics.com/" \
+		--label "org.opencontainers.image.title=$(APP_NAME)" \
+		--label "org.opencontainers.image.vendor=VictoriaMetrics" \
+		--label "org.opencontainers.image.version=$(PKG_TAG)" \
+		--label "org.opencontainers.image.created=$(shell date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+		$(foreach registry,$(DOCKER_REGISTRIES),\
+		--tag $(registry)/$(DOCKER_NAMESPACE)/$(APP_NAME):$(PKG_TAG)$(RACE)$(EXTRA_DOCKER_TAG_SUFFIX) \
+		) \
+		-o type=image \
+		--provenance=false \
+		-f app/$(APP_NAME)/multiarch/Dockerfile \
+		--push \
+		bin
+
 run-via-docker: package-via-docker
 	$(DOCKER_RUN) -it --rm \
 		--user $(shell id -u):$(shell id -g) \

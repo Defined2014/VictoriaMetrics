@@ -9,6 +9,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmalert/config"
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmalert/datasource"
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmalert/remotewrite"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/auth"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promutils"
 )
 
@@ -21,7 +22,7 @@ func (fr *fakeReplayQuerier) BuildWithParams(_ datasource.QuerierParams) datasou
 	return fr
 }
 
-func (fr *fakeReplayQuerier) QueryRange(_ context.Context, q string, from, to time.Time) (res datasource.Result, err error) {
+func (fr *fakeReplayQuerier) QueryRange(_ context.Context, q string, from, to time.Time, _ *auth.Token) (res datasource.Result, err error) {
 	key := fmt.Sprintf("%s+%s", from.Format("15:04:05"), to.Format("15:04:05"))
 	dps, ok := fr.registry[q]
 	if !ok {

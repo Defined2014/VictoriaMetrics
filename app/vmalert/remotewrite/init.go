@@ -70,6 +70,11 @@ func Init(ctx context.Context) (*Client, error) {
 		return nil, nil
 	}
 
+	baseURL, suffix, err := utils.ParseURL(*addr)
+	if err != nil {
+		return nil, fmt.Errorf("wrong format of remotewrite.url: %v", *addr)
+	}
+
 	t, err := httputils.Transport(*addr, *tlsCertFile, *tlsKeyFile, *tlsCAFile, *tlsServerName, *tlsInsecureSkipVerify)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create transport for -remoteWrite.url=%q: %w", *addr, err)
@@ -93,6 +98,8 @@ func Init(ctx context.Context) (*Client, error) {
 	return NewClient(ctx, Config{
 		Addr:          *addr,
 		AuthCfg:       authCfg,
+		BaseURL:       baseURL,
+		Suffix:        suffix,
 		Concurrency:   *concurrency,
 		MaxQueueSize:  *maxQueueSize,
 		MaxBatchSize:  *maxBatchSize,

@@ -66,6 +66,12 @@ func Init() (datasource.QuerierBuilder, error) {
 	if *addr == "" {
 		return nil, nil
 	}
+
+	baseURL, suffix, err := utils.ParseURL(*addr)
+	if err != nil {
+		return nil, fmt.Errorf("wrong format of remoteread.url: %v", *addr)
+	}
+
 	tr, err := httputils.Transport(*addr, *tlsCertFile, *tlsKeyFile, *tlsCAFile, *tlsServerName, *tlsInsecureSkipVerify)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create transport for -remoteRead.url=%q: %w", *addr, err)
@@ -86,5 +92,5 @@ func Init() (datasource.QuerierBuilder, error) {
 		return nil, fmt.Errorf("failed to configure auth: %w", err)
 	}
 	c := &http.Client{Transport: tr}
-	return datasource.NewPrometheusClient(*addr, authCfg, false, c), nil
+	return datasource.NewPrometheusClient(baseURL, suffix, authCfg, false, c), nil
 }

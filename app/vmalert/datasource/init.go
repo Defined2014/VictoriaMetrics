@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmalert/utils"
@@ -83,6 +82,11 @@ func Init(extraParams url.Values) (QuerierBuilder, error) {
 		return nil, fmt.Errorf("datasource.url is empty")
 	}
 
+	baseURL, suffix, err := utils.ParseURL(*addr)
+	if err != nil {
+		return nil, fmt.Errorf("wrong format of datasource.url: %v", *addr)
+	}
+
 	tr, err := httputils.Transport(*addr, *tlsCertFile, *tlsKeyFile, *tlsCAFile, *tlsServerName, *tlsInsecureSkipVerify)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create transport for -datasource.url=%q: %w", *addr, err)
@@ -122,7 +126,8 @@ func Init(extraParams url.Values) (QuerierBuilder, error) {
 	return &Client{
 		c:                &http.Client{Transport: tr},
 		authCfg:          authCfg,
-		datasourceURL:    strings.TrimSuffix(*addr, "/"),
+		baseURL:          baseURL,
+		suffix:           suffix,
 		appendTypePrefix: *appendTypePrefix,
 		queryStep:        *queryStep,
 		extraParams:      extraParams,

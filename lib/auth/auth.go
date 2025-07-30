@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 )
 
 // Token contains settings for request processing
@@ -44,6 +46,11 @@ func NewTokenPossibleMultitenant(authToken string) (*Token, error) {
 
 // Init initializes t from authToken.
 func (t *Token) Init(authToken string) error {
+	if len(authToken) == 0 {
+		t.Set(0, 0)
+		logger.Warnf("authToken is empty, use DefaultAuthToken [0:0]")
+		return nil
+	}
 	accountID, projectID, err := ParseToken(authToken)
 	if err != nil {
 		return fmt.Errorf("cannot parse authToken %q: %w", authToken, err)

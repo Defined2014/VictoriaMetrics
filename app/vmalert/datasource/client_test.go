@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmalert/utils"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/auth"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promauth"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/prompbmarshal"
 )
@@ -37,7 +38,7 @@ func TestVMInstantQuery(t *testing.T) {
 		t.Fatalf("should not be called")
 	})
 	c := -1
-	mux.HandleFunc("/api/v1/query", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/multitenant/api/v1/query", func(w http.ResponseWriter, r *http.Request) {
 		c++
 		if r.Method != http.MethodPost {
 			t.Fatalf("expected POST method got %s", r.Method)
@@ -74,14 +75,14 @@ func TestVMInstantQuery(t *testing.T) {
 			w.Write([]byte(`{"status":"success","data":{"resultType":"scalar","result":[1583786142, "1"]},"stats":{"seriesFetched": "42"}}`))
 		}
 	})
-	mux.HandleFunc("/render", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/multitenant/render", func(w http.ResponseWriter, _ *http.Request) {
 		c++
 		switch c {
 		case 8:
 			w.Write([]byte(`[{"target":"constantLine(10)","tags":{"name":"constantLine(10)"},"datapoints":[[10,1611758343],[10,1611758373],[10,1611758403]]}]`))
 		}
 	})
-	mux.HandleFunc("/select/logsql/stats_query", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/multitenant/select/logsql/stats_query", func(w http.ResponseWriter, r *http.Request) {
 		c++
 		if r.Method != http.MethodPost {
 			t.Fatalf("expected POST method got %s", r.Method)
@@ -114,14 +115,14 @@ func TestVMInstantQuery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected: %s", err)
 	}
-	s := NewPrometheusClient(srv.URL, authCfg, false, srv.Client())
+	s := NewPrometheusClient(srv.URL, "", authCfg, false, srv.Client())
 
 	p := datasourcePrometheus
 	pq := s.BuildWithParams(QuerierParams{DataSourceType: string(p), EvaluationInterval: 15 * time.Second})
 	ts := time.Now()
 
 	expErr := func(query, err string) {
-		_, _, gotErr := pq.Query(ctx, query, ts)
+		_, _, gotErr := pq.Query(ctx, query, ts, nil)
 		if gotErr == nil {
 			t.Fatalf("expected %q got nil", err)
 		}
@@ -136,7 +137,7 @@ func TestVMInstantQuery(t *testing.T) {
 	expErr(vmQuery, "unknown status")               // 3
 	expErr(vmQuery, "unexpected end of JSON input") // 4
 
-	res, _, err := pq.Query(ctx, vmQuery, ts) // 5 - vector
+	res, _, err := pq.Query(ctx, vmQuery, ts, nil) // 5 - vector
 	if err != nil {
 		t.Fatalf("unexpected %s", err)
 	}
@@ -157,7 +158,7 @@ func TestVMInstantQuery(t *testing.T) {
 	}
 	metricsEqual(t, res.Data, expected)
 
-	res, req, err := pq.Query(ctx, vmQuery, ts) // 6 - scalar
+	res, req, err := pq.Query(ctx, vmQuery, ts, nil) // 6 - scalar
 	if err != nil {
 		t.Fatalf("unexpected %s", err)
 	}
@@ -182,7 +183,7 @@ func TestVMInstantQuery(t *testing.T) {
 			res.SeriesFetched)
 	}
 
-	res, _, err = pq.Query(ctx, vmQuery, ts) // 7 - scalar with stats
+	res, _, err = pq.Query(ctx, vmQuery, ts, nil) // 7 - scalar with stats
 	if err != nil {
 		t.Fatalf("unexpected %s", err)
 	}
@@ -206,7 +207,7 @@ func TestVMInstantQuery(t *testing.T) {
 	// test graphite
 	gq := s.BuildWithParams(QuerierParams{DataSourceType: string(datasourceGraphite)})
 
-	res, _, err = gq.Query(ctx, queryRender, ts) // 8 - graphite
+	res, _, err = gq.Query(ctx, queryRender, ts, nil) // 8 - graphite
 	if err != nil {
 		t.Fatalf("unexpected %s", err)
 	}
@@ -228,7 +229,7 @@ func TestVMInstantQuery(t *testing.T) {
 
 	expErr(vlogsQuery, "error parsing response") // 9
 
-	res, _, err = pq.Query(ctx, vlogsQuery, ts) // 10
+	res, _, err = pq.Query(ctx, vlogsQuery, ts, nil) // 10
 	if err != nil {
 		t.Fatalf("unexpected %s", err)
 	}
@@ -256,7 +257,7 @@ func TestVMInstantQueryWithRetry(t *testing.T) {
 		t.Fatalf("should not be called")
 	})
 	c := -1
-	mux.HandleFunc("/api/v1/query", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/multitenant/api/v1/query", func(w http.ResponseWriter, r *http.Request) {
 		c++
 		if r.URL.Query().Get("query") != vmQuery {
 			t.Fatalf("expected %s in query param, got %s", vmQuery, r.URL.Query().Get("query"))
@@ -281,11 +282,11 @@ func TestVMInstantQueryWithRetry(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	s := NewPrometheusClient(srv.URL, nil, false, srv.Client())
+	s := NewPrometheusClient(srv.URL, "", nil, false, srv.Client())
 	pq := s.BuildWithParams(QuerierParams{DataSourceType: string(datasourcePrometheus)})
 
 	expErr := func(err string) {
-		_, _, gotErr := pq.Query(ctx, vmQuery, time.Now())
+		_, _, gotErr := pq.Query(ctx, vmQuery, time.Now(), nil)
 		if gotErr == nil {
 			t.Fatalf("expected %q got nil", err)
 		}
@@ -295,7 +296,7 @@ func TestVMInstantQueryWithRetry(t *testing.T) {
 	}
 
 	expValue := func(v float64) {
-		res, _, err := pq.Query(ctx, vmQuery, time.Now())
+		res, _, err := pq.Query(ctx, vmQuery, time.Now(), nil)
 		if err != nil {
 			t.Fatalf("unexpected %s", err)
 		}
@@ -348,7 +349,7 @@ func TestVMRangeQuery(t *testing.T) {
 		t.Fatalf("should not be called")
 	})
 	c := -1
-	mux.HandleFunc("/api/v1/query_range", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/multitenant/api/v1/query_range", func(w http.ResponseWriter, r *http.Request) {
 		c++
 		if r.Method != http.MethodPost {
 			t.Fatalf("expected POST method got %s", r.Method)
@@ -382,7 +383,7 @@ func TestVMRangeQuery(t *testing.T) {
 			w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"__name__":"vm_rows"},"values":[[1583786142,"13763"]]}]}}`))
 		}
 	})
-	mux.HandleFunc("/select/logsql/stats_query_range", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/multitenant/select/logsql/stats_query_range", func(w http.ResponseWriter, r *http.Request) {
 		c++
 		if r.Method != http.MethodPost {
 			t.Fatalf("expected POST method got %s", r.Method)
@@ -424,19 +425,22 @@ func TestVMRangeQuery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected: %s", err)
 	}
-	s := NewPrometheusClient(srv.URL, authCfg, false, srv.Client())
+	s := NewPrometheusClient(srv.URL, "", authCfg, false, srv.Client())
 
 	pq := s.BuildWithParams(QuerierParams{DataSourceType: string(datasourcePrometheus), EvaluationInterval: 15 * time.Second})
 
-	_, err = pq.QueryRange(ctx, vmQuery, time.Now(), time.Time{})
+	_, err = pq.QueryRange(ctx, vmQuery, time.Now(), time.Time{}, nil)
 	expectError(t, err, "is missing")
 
-	_, err = pq.QueryRange(ctx, vmQuery, time.Time{}, time.Now())
+	_, err = pq.QueryRange(ctx, vmQuery, time.Time{}, time.Now(), &auth.Token{
+		AccountID: 111,
+		ProjectID: 222,
+	})
 	expectError(t, err, "is missing")
 
 	start, end := time.Now().Add(-time.Minute), time.Now()
 
-	res, err := pq.QueryRange(ctx, vmQuery, start, end)
+	res, err := pq.QueryRange(ctx, vmQuery, start, end, nil)
 	if err != nil {
 		t.Fatalf("unexpected %s", err)
 	}
@@ -456,18 +460,18 @@ func TestVMRangeQuery(t *testing.T) {
 	// test unsupported graphite
 	gq := s.BuildWithParams(QuerierParams{DataSourceType: string(datasourceGraphite)})
 
-	_, err = gq.QueryRange(ctx, queryRender, start, end)
+	_, err = gq.QueryRange(ctx, queryRender, start, end, nil)
 	expectError(t, err, "is not supported")
 
 	// unsupported logsql
 	gq = s.BuildWithParams(QuerierParams{DataSourceType: string(datasourceVLogs), EvaluationInterval: 60 * time.Second})
 
-	res, err = gq.QueryRange(ctx, vlogsRangeQuery, start, end)
+	res, err = gq.QueryRange(ctx, vlogsRangeQuery, start, end, nil)
 	expectError(t, err, "is not supported")
 
 	// supported logsql
 	gq = s.BuildWithParams(QuerierParams{DataSourceType: string(datasourceVLogs), EvaluationInterval: 60 * time.Second, ApplyIntervalAsTimeFilter: true})
-	res, err = gq.QueryRange(ctx, vlogsRangeQuery, start, end)
+	res, err = gq.QueryRange(ctx, vlogsRangeQuery, start, end, nil)
 	if err != nil {
 		t.Fatalf("unexpected %s", err)
 	}
@@ -493,7 +497,7 @@ func TestRequestParams(t *testing.T) {
 	f := func(isQueryRange bool, c *Client, checkFn func(t *testing.T, r *http.Request)) {
 		t.Helper()
 
-		req, err := c.newRequest(ctx)
+		req, err := c.newRequest(ctx, nil)
 		if err != nil {
 			t.Fatalf("error in newRequest: %s", err)
 		}
@@ -530,7 +534,7 @@ func TestRequestParams(t *testing.T) {
 	f(false, &Client{
 		dataSourceType: datasourcePrometheus,
 	}, func(t *testing.T, r *http.Request) {
-		checkEqualString(t, "/api/v1/query", r.URL.Path)
+		checkEqualString(t, "multitenant/api/v1/query", r.URL.Path)
 	})
 
 	// prometheus prefix
@@ -538,14 +542,14 @@ func TestRequestParams(t *testing.T) {
 		dataSourceType:   datasourcePrometheus,
 		appendTypePrefix: true,
 	}, func(t *testing.T, r *http.Request) {
-		checkEqualString(t, "/prometheus/api/v1/query", r.URL.Path)
+		checkEqualString(t, "multitenant/prometheus/api/v1/query", r.URL.Path)
 	})
 
 	// prometheus range path
 	f(true, &Client{
 		dataSourceType: datasourcePrometheus,
 	}, func(t *testing.T, r *http.Request) {
-		checkEqualString(t, "/api/v1/query_range", r.URL.Path)
+		checkEqualString(t, "multitenant/api/v1/query_range", r.URL.Path)
 	})
 
 	// prometheus range prefix
@@ -553,14 +557,14 @@ func TestRequestParams(t *testing.T) {
 		dataSourceType:   datasourcePrometheus,
 		appendTypePrefix: true,
 	}, func(t *testing.T, r *http.Request) {
-		checkEqualString(t, "/prometheus/api/v1/query_range", r.URL.Path)
+		checkEqualString(t, "multitenant/prometheus/api/v1/query_range", r.URL.Path)
 	})
 
 	// graphite path
 	f(false, &Client{
 		dataSourceType: datasourceGraphite,
 	}, func(t *testing.T, r *http.Request) {
-		checkEqualString(t, graphitePath, r.URL.Path)
+		checkEqualString(t, "multitenant"+graphitePath, r.URL.Path)
 	})
 
 	// graphite prefix
@@ -568,7 +572,7 @@ func TestRequestParams(t *testing.T) {
 		dataSourceType:   datasourceGraphite,
 		appendTypePrefix: true,
 	}, func(t *testing.T, r *http.Request) {
-		checkEqualString(t, graphitePrefix+graphitePath, r.URL.Path)
+		checkEqualString(t, "multitenant"+graphitePrefix+graphitePath, r.URL.Path)
 	})
 
 	// default params
@@ -744,7 +748,7 @@ func TestHeaders(t *testing.T) {
 		t.Helper()
 
 		vm := vmFn()
-		req, err := vm.newQueryRequest(ctx, "foo", time.Now())
+		req, err := vm.newQueryRequest(ctx, "foo", time.Now(), nil)
 		if err != nil {
 			t.Fatalf("error in newQueryRequest: %s", err)
 		}
@@ -757,7 +761,7 @@ func TestHeaders(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Error get auth config: %s", err)
 		}
-		return NewPrometheusClient("", cfg, false, nil)
+		return NewPrometheusClient("", "", cfg, false, nil)
 	}, func(t *testing.T, r *http.Request) {
 		u, p, _ := r.BasicAuth()
 		checkEqualString(t, "foo", u)
@@ -770,7 +774,7 @@ func TestHeaders(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Error get auth config: %s", err)
 		}
-		return NewPrometheusClient("", cfg, false, nil)
+		return NewPrometheusClient("", "", cfg, false, nil)
 	}, func(t *testing.T, r *http.Request) {
 		reqToken := r.Header.Get("Authorization")
 		splitToken := strings.Split(reqToken, "Bearer ")
@@ -783,7 +787,7 @@ func TestHeaders(t *testing.T) {
 
 	// custom extraHeaders
 	f(func() *Client {
-		c := NewPrometheusClient("", nil, false, nil)
+		c := NewPrometheusClient("", "", nil, false, nil)
 		c.extraHeaders = []keyValue{
 			{key: "Foo", value: "bar"},
 			{key: "Baz", value: "qux"},
@@ -802,7 +806,7 @@ func TestHeaders(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Error get auth config: %s", err)
 		}
-		c := NewPrometheusClient("", cfg, false, nil)
+		c := NewPrometheusClient("", "", cfg, false, nil)
 		c.extraHeaders = []keyValue{
 			{key: "Authorization", value: "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ=="},
 		}

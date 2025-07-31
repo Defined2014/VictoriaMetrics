@@ -11,7 +11,7 @@ issues:
   exclude-rules:
   - linters:
     - staticcheck
-    text: "SA(4003|1019|5011):"
+    id: "SA(4003|1019|5011):"
   include:
   - EXC0012
   - EXC0014

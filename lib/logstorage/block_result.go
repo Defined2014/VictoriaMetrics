@@ -739,11 +739,12 @@ func (br *blockResult) getBucketedTimestampValues(bf *byStatsField) []string {
 
 			timestamp := timestamps[i]
 			timestamp -= bucketOffsetInt
-			if bf.bucketSizeStr == "month" {
+			switch bf.bucketSizeStr {
+			case "month":
 				timestamp = truncateTimestampToMonth(timestamp)
-			} else if bf.bucketSizeStr == "year" {
+			case "year":
 				timestamp = truncateTimestampToYear(timestamp)
-			} else {
+			default:
 				timestamp -= timestamp % bucketSizeInt
 			}
 			timestamp += bucketOffsetInt
@@ -1260,11 +1261,12 @@ func (br *blockResult) getBucketedTimestampISO8601Values(valuesEncoded []string,
 
 			timestamp := unmarshalTimestampISO8601(v)
 			timestamp -= bucketOffsetInt
-			if bf.bucketSizeStr == "month" {
+			switch bf.bucketSizeStr {
+			case "month":
 				timestamp = truncateTimestampToMonth(timestamp)
-			} else if bf.bucketSizeStr == "year" {
+			case "year":
 				timestamp = truncateTimestampToYear(timestamp)
-			} else {
+			default:
 				timestamp -= timestamp % bucketSizeInt
 			}
 			timestamp -= timestamp % bucketSizeInt
@@ -1339,11 +1341,12 @@ func (br *blockResult) getBucketedValue(s string, bf *byStatsField) string {
 		bucketOffset := int64(bf.bucketOffset)
 
 		timestamp -= bucketOffset
-		if bf.bucketSizeStr == "month" {
+		switch bf.bucketSizeStr {
+		case "month":
 			timestamp = truncateTimestampToMonth(timestamp)
-		} else if bf.bucketSizeStr == "year" {
+		case "year":
 			timestamp = truncateTimestampToYear(timestamp)
-		} else {
+		default:
 			timestamp -= timestamp % bucketSizeInt
 		}
 		timestamp += bucketOffset

@@ -235,9 +235,10 @@ func extractRulesFilter(r *http.Request) rulesFilter {
 	ruleTypeParam := r.URL.Query().Get("type")
 	// for some reason, `type` in filter doesn't match `type` in response,
 	// so we use this matching here
-	if ruleTypeParam == "alert" {
+	switch ruleTypeParam {
+	case "alert":
 		ruleType = ruleTypeAlerting
-	} else if ruleTypeParam == "record" {
+	case "record":
 		ruleType = ruleTypeRecording
 	}
 	rf.ruleType = ruleType

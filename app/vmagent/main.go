@@ -204,7 +204,7 @@ func main() {
 func getOpenTSDBHTTPInsertHandler() func(req *http.Request) error {
 	if !remotewrite.MultitenancyEnabled() {
 		return func(req *http.Request) error {
-			path := strings.Replace(req.URL.Path, "//", "/", -1)
+			path := strings.ReplaceAll(req.URL.Path, "//", "/")
 			if path != "/api/put" {
 				return fmt.Errorf("unsupported path requested: %q; expecting '/api/put'", path)
 			}
@@ -212,7 +212,7 @@ func getOpenTSDBHTTPInsertHandler() func(req *http.Request) error {
 		}
 	}
 	return func(req *http.Request) error {
-		path := strings.Replace(req.URL.Path, "//", "/", -1)
+		path := strings.ReplaceAll(req.URL.Path, "//", "/")
 		at, err := getAuthTokenFromPath(path)
 		if err != nil {
 			return fmt.Errorf("cannot obtain auth token from path %q: %w", path, err)
@@ -257,7 +257,7 @@ func requestHandler(w http.ResponseWriter, r *http.Request) bool {
 		return true
 	}
 
-	path := strings.Replace(r.URL.Path, "//", "/", -1)
+	path := strings.ReplaceAll(r.URL.Path, "//", "/")
 	if strings.HasPrefix(path, "/prometheus/api/v1/import/prometheus") || strings.HasPrefix(path, "/api/v1/import/prometheus") {
 		prometheusimportRequests.Inc()
 		if err := prometheusimport.InsertHandler(nil, r); err != nil {

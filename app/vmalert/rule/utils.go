@@ -136,21 +136,18 @@ func addTenantLabelToTSS(auth *auth.Token, tss []prompbmarshal.TimeSeries) {
 			needAdd++
 		}
 		if needAdd > 0 {
-			labels := make([]prompbmarshal.Label, 0, len(ts.Labels)+needAdd)
-			labels = append(labels, ts.Labels...)
 			if !hasAccountID {
-				labels = append(labels, prompbmarshal.Label{
+				ts.Labels = append(ts.Labels, prompbmarshal.Label{
 					Name:  "vm_account_id",
 					Value: accountIDStr,
 				})
 			}
 			if !hasProjectID {
-				labels = append(labels, prompbmarshal.Label{
+				ts.Labels = append(ts.Labels, prompbmarshal.Label{
 					Name:  "vm_project_id",
 					Value: projectIDStr,
 				})
 			}
-			ts.Labels = labels
 		}
 	}
 }

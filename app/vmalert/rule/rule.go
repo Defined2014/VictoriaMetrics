@@ -32,7 +32,7 @@ type Rule interface {
 	// such as metrics unregister
 	close()
 
-	// get group auth token
+	// get rule auth token
 	authToken() *auth.Token
 }
 

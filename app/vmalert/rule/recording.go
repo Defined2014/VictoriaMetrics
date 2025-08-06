@@ -53,8 +53,8 @@ func (rr *RecordingRule) String() string {
 	return rr.Name
 }
 
-// AuthToken returns the auth token of the recording rule
-func (rr *RecordingRule) AuthToken() *auth.Token {
+// authToken returns the auth token of the recording rule
+func (rr *RecordingRule) authToken() *auth.Token {
 	return rr.GroupAuthToken
 }
 
@@ -74,7 +74,7 @@ func NewRecordingRule(qb datasource.QuerierBuilder, group *Group, cfg config.Rul
 		Labels:         cfg.Labels,
 		GroupID:        group.ID(),
 		GroupName:      group.Name,
-		GroupAuthToken: group.AuthToken,
+		GroupAuthToken: group.authToken,
 		File:           group.File,
 		metrics:        &recordingRuleMetrics{},
 		q: qb.BuildWithParams(datasource.QuerierParams{

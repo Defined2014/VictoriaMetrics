@@ -60,9 +60,6 @@ type Config struct {
 	Addr    string
 	AuthCfg *promauth.Config
 
-	BaseURL string
-	Suffix  string
-
 	// Concurrency defines number of readers that
 	// concurrently read from the queue and flush data
 	Concurrency int

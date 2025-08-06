@@ -51,8 +51,8 @@ type AlertingRule struct {
 	metrics *alertingRuleMetrics
 }
 
-// AuthToken returns the auth token of the alerting rule
-func (ar *AlertingRule) AuthToken() *auth.Token {
+// authToken returns the auth token of the alerting rule
+func (ar *AlertingRule) authToken() *auth.Token {
 	return ar.GroupAuthToken
 }
 
@@ -77,7 +77,7 @@ func NewAlertingRule(qb datasource.QuerierBuilder, group *Group, cfg config.Rule
 		Annotations:    cfg.Annotations,
 		GroupID:        group.ID(),
 		GroupName:      group.Name,
-		GroupAuthToken: group.AuthToken,
+		GroupAuthToken: group.authToken,
 		File:           group.File,
 		EvalInterval:   group.Interval,
 		Debug:          cfg.Debug,
@@ -708,7 +708,7 @@ func firingAlertStaleTimeSeries(ls map[string]string, timestamp int64) []prompbm
 // restore restores the value of ActiveAt field for active alerts,
 // based on previously written time series `alertForStateMetricName`.
 // Only rules with For > 0 can be restored.
-func (ar *AlertingRule) restore(ctx context.Context, q datasource.Querier, ts time.Time, lookback time.Duration, _ *auth.Token) error {
+func (ar *AlertingRule) restore(ctx context.Context, q datasource.Querier, ts time.Time, lookback time.Duration) error {
 	if ar.For < 1 {
 		return nil
 	}

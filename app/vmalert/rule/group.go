@@ -73,7 +73,7 @@ type Group struct {
 	// requests be aligned with interval
 	evalAlignment *bool
 
-	AuthToken *auth.Token
+	authToken *auth.Token
 }
 
 type groupMetrics struct {
@@ -139,7 +139,7 @@ func NewGroup(cfg config.Group, qb datasource.QuerierBuilder, defaultInterval ti
 		doneCh:     make(chan struct{}),
 		finishedCh: make(chan struct{}),
 		updateCh:   make(chan *Group),
-		AuthToken:  token,
+		authToken:  token,
 	}
 	if g.Interval == 0 {
 		g.Interval = defaultInterval
@@ -223,7 +223,7 @@ func (g *Group) restore(ctx context.Context, qb datasource.QuerierBuilder, ts ti
 			Headers:            g.Headers,
 			Debug:              ar.Debug,
 		})
-		if err := ar.restore(ctx, q, ts, lookback, g.AuthToken); err != nil {
+		if err := ar.restore(ctx, q, ts, lookback); err != nil {
 			return fmt.Errorf("error while restoring rule %q: %w", rule, err)
 		}
 	}
@@ -696,6 +696,9 @@ func (e *executor) exec(ctx context.Context, r Rule, ts time.Time, resolveDurati
 				}
 			}
 			return lastErr
+		}
+		if r.authToken() != nil {
+			addTenantLabelToTSS(r.authToken(), tss)
 		}
 		if err := pushToRW(tss); err != nil {
 			return err

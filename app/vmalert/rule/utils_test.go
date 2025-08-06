@@ -1,8 +1,14 @@
 package rule
 
 import (
+	"context"
 	"net/http"
 	"testing"
+	"time"
+
+	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmalert/datasource"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/auth"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRequestToCurl(t *testing.T) {
@@ -72,4 +78,35 @@ func TestRequestToCurl(t *testing.T) {
 	req = newReq("https://foo.com")
 	req.Header.Set("Token", "secret-token")
 	f(req, "curl -k -X POST -H 'Token: <secret>' 'https://foo.com'")
+}
+
+func TestAddTenantLabelToTSS(t *testing.T) {
+	fq := &datasource.FakeQuerier{}
+	fq.Add(metricWithValueAndLabels(t, 1, "__name__", "foo", "job", "bar"))
+
+	auth, err := auth.NewToken("1:2")
+	require.NoError(t, err)
+
+	// with auth
+	r := &RecordingRule{
+		Name:           "test",
+		q:              fq,
+		state:          &ruleState{entries: make([]StateEntry, 10)},
+		GroupAuthToken: auth,
+	}
+	tss, err := r.exec(context.Background(), time.Now(), 0)
+	require.NoError(t, err)
+	addTenantLabelToTSS(r.authToken(), tss)
+	require.Len(t, tss[0].Labels, 4)
+	require.Equal(t, tss[0].Labels[2].Name, "vm_account_id")
+	require.Equal(t, tss[0].Labels[2].Value, "1")
+	require.Equal(t, tss[0].Labels[3].Name, "vm_project_id")
+	require.Equal(t, tss[0].Labels[3].Value, "2")
+
+	// without auth
+	r.GroupAuthToken = nil
+	tss, err = r.exec(context.Background(), time.Now(), 0)
+	require.NoError(t, err)
+	addTenantLabelToTSS(r.authToken(), tss)
+	require.Len(t, tss[0].Labels, 2)
 }

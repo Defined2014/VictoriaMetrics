@@ -59,8 +59,8 @@ func TestNewTokenFailure(t *testing.T) {
 			t.Fatalf("expecting nil token; got\n%#v", newToken)
 		}
 	}
-	// empty token, we will return [0:0] for empty token
-	// f("")
+	// empty token
+	f("")
 	// empty accountID and projectID"
 	f(":")
 	// accountID and projectID not int values

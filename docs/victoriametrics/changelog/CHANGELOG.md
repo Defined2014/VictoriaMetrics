@@ -20,6 +20,8 @@ See also [LTS releases](https://docs.victoriametrics.com/victoriametrics/lts-rel
 
 ## [v1.122.2]
 
+* BUGFIX: [vmauth](https://docs.victoriametrics.com/victoriametrics/vmauth/): properly read proxy-protocol header. See this PR [#9546](https://github.com/VictoriaMetrics/VictoriaMetrics/pull/9546) for details.
+
 * BUGFIX: [vmselect](https://docs.victoriametrics.com/victoriametrics/cluster-victoriametrics/) in [VictoriaMetrics cluster](https://docs.victoriametrics.com/victoriametrics/cluster-victoriametrics/): prevent resource leak on partial responses for `/federate` API requests. This this PR [9536](https://github.com/VictoriaMetrics/VictoriaMetrics/pull/9536) for details. Thanks to the @fxrlv.
 
 * BUGFIX: [vmsingle](https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/) and `vmstorage` in [VictoriaMetrics cluster](https://docs.victoriametrics.com/victoriametrics/cluster-victoriametrics/): prevent performance degradation on hitting daily or hourly series cardinality limits. See this issue [9554](https://github.com/VictoriaMetrics/VictoriaMetrics/issues/9554) for details.

@@ -206,6 +206,19 @@ func (tc *TestCase) MustStartVmauth(instance string, flags []string, configFileY
 	return app
 }
 
+// MustStartVmalert is a test helper function that starts an instance of
+// vmalert and fails the test if the app fails to start.
+func (tc *TestCase) MustStartVmalert(instance string, flags []string, rulesConfigYAML string) *Vmalert {
+	tc.t.Helper()
+
+	app, err := StartVmalert(instance, flags, tc.cli, rulesConfigYAML)
+	if err != nil {
+		tc.t.Fatalf("Could not start %s: %v", instance, err)
+	}
+	tc.addApp(instance, app)
+	return app
+}
+
 // MustStartVmbackup is a test helper that starts an instance of vmbackup
 // and waits until the app exits. It fails the test if the app fails to start or
 // exits with non zero code.

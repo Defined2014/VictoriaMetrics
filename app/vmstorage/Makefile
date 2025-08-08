@@ -76,6 +76,9 @@ package-vmstorage-386:
 publish-vmstorage:
 	APP_NAME=vmstorage $(MAKE) publish-via-docker
 
+publish-vmstorage-for-tidbcloud:
+	APP_NAME=vmstorage $(MAKE) publish-via-docker-for-tidbcloud
+
 publish-vmstorage-race:
 	APP_NAME=vmstorage RACE=-race $(MAKE) publish-via-docker
 

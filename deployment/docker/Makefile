@@ -138,7 +138,7 @@ publish-via-docker-for-tidbcloud:
 		--build-arg root_image=$(ROOT_IMAGE) \
 		--build-arg APP_NAME=$(APP_NAME) \
 		--build-arg BINARY_SUFFIX="" \
-		--label "org.opencontainers.image.source=https://github.com/VictoriaMetrics/VictoriaMetrics" \
+		--label "org.opencontainers.image.source=https://github.com/tidbcloud/VictoriaMetrics" \
 		--label "org.opencontainers.image.documentation=https://docs.victoriametrics.com/" \
 		--label "org.opencontainers.image.title=$(APP_NAME)" \
 		--label "org.opencontainers.image.vendor=VictoriaMetrics" \

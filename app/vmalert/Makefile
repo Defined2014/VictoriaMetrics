@@ -66,7 +66,7 @@ package-vmalert-386:
 publish-vmalert:
 	APP_NAME=vmalert $(MAKE) publish-via-docker
 
-publish-vmalert-for-tidb-cloud:
+publish-vmalert-for-tidbcloud:
 	APP_NAME=vmalert $(MAKE) publish-via-docker-for-tidbcloud
 
 test-vmalert:

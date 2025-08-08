@@ -66,6 +66,9 @@ package-vmrestore-386:
 publish-vmrestore:
 	APP_NAME=vmrestore $(MAKE) publish-via-docker
 
+publish-vmrestore-for-tidbcloud:
+	APP_NAME=vmrestore $(MAKE) publish-via-docker-for-tidbcloud
+
 vmrestore-linux-amd64:
 	APP_NAME=vmrestore CGO_ENABLED=1 GOOS=linux GOARCH=amd64 $(MAKE) app-local-goos-goarch
 

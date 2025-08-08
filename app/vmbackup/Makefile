@@ -66,6 +66,9 @@ package-vmbackup-386:
 publish-vmbackup:
 	APP_NAME=vmbackup $(MAKE) publish-via-docker
 
+publish-vmbackup-for-tidbcloud:
+	APP_NAME=vmbackup $(MAKE) publish-via-docker-for-tidbcloud
+
 vmbackup-linux-amd64:
 	APP_NAME=vmbackup CGO_ENABLED=1 GOOS=linux GOARCH=amd64 $(MAKE) app-local-goos-goarch
 

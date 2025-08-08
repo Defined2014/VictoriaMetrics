@@ -106,6 +106,11 @@ publish: \
 	publish-vmselect \
 	publish-vmstorage
 
+publish-for-tidbcloud: \
+	publish-vminsert-for-tidbcloud \
+	publish-vmselect-for-tidbcloud \
+	publish-vmstorage-for-tidbcloud
+
 package: \
 	package-vminsert \
 	package-vmselect \

@@ -72,6 +72,9 @@ package-vminsert-386:
 publish-vminsert:
 	APP_NAME=vminsert $(MAKE) publish-via-docker
 
+publish-vminsert-for-tidbcloud:
+	APP_NAME=vminsert $(MAKE) publish-via-docker-for-tidbcloud
+
 publish-vminsert-race:
 	APP_NAME=vminsert RACE=-race $(MAKE) publish-via-docker
 

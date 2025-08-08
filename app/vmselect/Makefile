@@ -76,6 +76,9 @@ package-vmselect-386:
 publish-vmselect:
 	APP_NAME=vmselect $(MAKE) publish-via-docker
 
+publish-vmselect-for-tidbcloud:
+	APP_NAME=vmselect $(MAKE) publish-via-docker-for-tidbcloud
+
 publish-vmselect-race:
 	APP_NAME=vmselect RACE=-race $(MAKE) publish-via-docker
 

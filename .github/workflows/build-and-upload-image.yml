@@ -11,7 +11,12 @@ on:
         required: true
         type: choice
         options:
+          - all
           - vmalert
+          - cluster
+          - vmbackup
+          - vmrestore
+          - vmagent
       tag:
         description: 'The image tag. If empty, the default value will be used'
         type: string
@@ -262,6 +267,22 @@ jobs:
             export PKG_TAG=${{ github.event.inputs.tag }}
           fi
 
-          if [[ "${{ github.event.inputs.components }}" == "vmalert" ]]; then
-            make publish-vmalert-for-tidb-cloud
+          if [[ "${{ github.event.inputs.components }}" == "vmalert" || "${{ github.event.inputs.components }}" == "all" ]]; then
+            make publish-vmalert-for-tidbcloud
+          fi
+
+          if [[ "${{ github.event.inputs.components }}" == "vmbackup" || "${{ github.event.inputs.components }}" == "all" ]]; then
+            make publish-vmbackup-for-tidbcloud
+          fi
+
+          if [[ "${{ github.event.inputs.components }}" == "vmrestore" || "${{ github.event.inputs.components }}" == "all" ]]; then
+            make publish-vmrestore-for-tidbcloud
+          fi
+
+          if [[ "${{ github.event.inputs.components }}" == "cluster" || "${{ github.event.inputs.components }}" == "all" ]]; then
+            make publish-for-tidbcloud
+          fi
+
+          if [[ "${{ github.event.inputs.components }}" == "vmagent" || "${{ github.event.inputs.components }}" == "all" ]]; then
+            make publish-vmagent-for-tidbcloud
           fi

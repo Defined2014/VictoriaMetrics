@@ -114,6 +114,13 @@ type apiGroup struct {
 	Healthy int
 	// NoMatch not matching rules count
 	NoMatch int
+
+	AuthToken *APIAuthToken `json:"auth_token"`
+}
+
+type APIAuthToken struct {
+	AccountID uint32 `json:"account_id"`
+	ProjectID uint32 `json:"project_id"`
 }
 
 // groupAlerts represents a group of alerts for WEB view

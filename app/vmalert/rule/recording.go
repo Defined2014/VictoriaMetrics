@@ -12,6 +12,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmalert/config"
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmalert/datasource"
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmalert/vmalertutil"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/auth"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/decimal"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/prompbmarshal"
@@ -31,6 +32,8 @@ type RecordingRule struct {
 	GroupName string
 	File      string
 	Debug     bool
+
+	GroupAuthToken *auth.Token
 
 	q datasource.Querier
 
@@ -75,6 +78,11 @@ func (rr *RecordingRule) String() string {
 	return rr.Name
 }
 
+// authToken returns the auth token of the recording rule
+func (rr *RecordingRule) authToken() *auth.Token {
+	return rr.GroupAuthToken
+}
+
 // ID returns unique Rule ID
 // within the parent Group.
 func (rr *RecordingRule) ID() uint64 {
@@ -105,6 +113,8 @@ func NewRecordingRule(qb datasource.QuerierBuilder, group *Group, cfg config.Rul
 			Headers:                   group.Headers,
 			Debug:                     debug,
 		}),
+
+		GroupAuthToken: group.authToken,
 	}
 
 	entrySize := *ruleUpdateEntriesLimit
@@ -133,7 +143,7 @@ func (rr *RecordingRule) unregisterMetrics() {
 // It doesn't update internal states of the Rule and meant to be used just
 // to get time series for backfilling.
 func (rr *RecordingRule) execRange(ctx context.Context, start, end time.Time) ([]prompbmarshal.TimeSeries, error) {
-	res, err := rr.q.QueryRange(ctx, rr.Expr, start, end)
+	res, err := rr.q.QueryRange(context.WithValue(ctx, datasource.TokenKey, rr.GroupAuthToken), rr.Expr, start, end)
 	if err != nil {
 		return nil, err
 	}
@@ -154,7 +164,7 @@ func (rr *RecordingRule) execRange(ctx context.Context, start, end time.Time) ([
 // exec executes RecordingRule expression via the given Querier.
 func (rr *RecordingRule) exec(ctx context.Context, ts time.Time, limit int) ([]prompbmarshal.TimeSeries, error) {
 	start := time.Now()
-	res, req, err := rr.q.Query(ctx, rr.Expr, ts)
+	res, req, err := rr.q.Query(context.WithValue(ctx, datasource.TokenKey, rr.GroupAuthToken), rr.Expr, ts)
 	curState := StateEntry{
 		Time:          start,
 		At:            ts,

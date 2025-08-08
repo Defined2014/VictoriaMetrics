@@ -34,6 +34,9 @@ type Group struct {
 	Limit       int                `yaml:"limit,omitempty"`
 	Rules       []Rule             `yaml:"rules"`
 	Concurrency int                `yaml:"concurrency"`
+
+	Tenant string `yaml:"tenant,omitempty"`
+
 	// Labels is a set of label value pairs, that will be added to every rule.
 	// It has priority over the external labels.
 	Labels map[string]string `yaml:"labels"`

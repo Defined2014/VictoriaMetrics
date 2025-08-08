@@ -10,17 +10,22 @@ import (
 	"strings"
 	"time"
 
+	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmalert/vmalertutil"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/auth"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/netutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promauth"
 )
 
 type datasourceType string
+type contextKey string
 
 const (
 	datasourcePrometheus datasourceType = "prometheus"
 	datasourceGraphite   datasourceType = "graphite"
 	datasourceVLogs      datasourceType = "vlogs"
+
+	TokenKey contextKey = "auth_token"
 )
 
 func toDatasourceType(s string) datasourceType {
@@ -300,9 +305,14 @@ func (c *Client) newQueryRequest(ctx context.Context, query string, ts time.Time
 }
 
 func (c *Client) newRequest(ctx context.Context) (*http.Request, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.datasourceURL, nil)
+	var at *auth.Token
+	if v := ctx.Value(TokenKey); v != nil {
+		at = v.(*auth.Token)
+	}
+	requestURL := vmalertutil.ReplaceMultitenantsWithAuthToken(c.datasourceURL, at)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, nil)
 	if err != nil {
-		logger.Panicf("BUG: unexpected error from http.NewRequest(%q): %s", c.datasourceURL, err)
+		logger.Panicf("BUG: unexpected error from http.NewRequest(%q): %s", requestURL, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.authCfg != nil {

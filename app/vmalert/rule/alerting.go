@@ -17,6 +17,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmalert/notifier"
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmalert/templates"
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmalert/vmalertutil"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/auth"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/decimal"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/prompbmarshal"
@@ -50,6 +51,13 @@ type AlertingRule struct {
 	state *ruleState
 
 	metrics *alertingRuleMetrics
+
+	groupAuthToken *auth.Token
+}
+
+// authToken returns the auth token of the alerting rule
+func (ar *AlertingRule) authToken() *auth.Token {
+	return ar.groupAuthToken
 }
 
 type alertingRuleMetrics struct {
@@ -152,6 +160,8 @@ func NewAlertingRule(qb datasource.QuerierBuilder, group *Group, cfg config.Rule
 			Debug:                     debug,
 		}),
 		alerts: make(map[uint64]*notifier.Alert),
+
+		groupAuthToken: group.authToken,
 	}
 
 	entrySize := *ruleUpdateEntriesLimit
@@ -329,7 +339,7 @@ func (ar *AlertingRule) toLabels(m datasource.Metric, qFn templates.QueryFn) (*l
 // It is not thread safe.
 // It returns ALERT and ALERT_FOR_STATE time series as a result.
 func (ar *AlertingRule) execRange(ctx context.Context, start, end time.Time) ([]prompbmarshal.TimeSeries, error) {
-	res, err := ar.q.QueryRange(ctx, ar.Expr, start, end)
+	res, err := ar.q.QueryRange(context.WithValue(ctx, datasource.TokenKey, ar.groupAuthToken), ar.Expr, start, end)
 	if err != nil {
 		return nil, err
 	}
@@ -394,7 +404,7 @@ const resolvedRetention = 15 * time.Minute
 // Based on the Querier results AlertingRule maintains notifier.Alerts
 func (ar *AlertingRule) exec(ctx context.Context, ts time.Time, limit int) ([]prompbmarshal.TimeSeries, error) {
 	start := time.Now()
-	res, req, err := ar.q.Query(ctx, ar.Expr, ts)
+	res, req, err := ar.q.Query(context.WithValue(ctx, datasource.TokenKey, ar.groupAuthToken), ar.Expr, ts)
 	curState := StateEntry{
 		Time:          start,
 		At:            ts,
@@ -418,7 +428,7 @@ func (ar *AlertingRule) exec(ctx context.Context, ts time.Time, limit int) ([]pr
 
 	ar.logDebugf(ts, nil, "query returned %d series (elapsed: %s, isPartial: %t)", curState.Samples, curState.Duration, isPartialResponse(res))
 	qFn := func(query string) ([]datasource.Metric, error) {
-		res, _, err := ar.q.Query(ctx, query, ts)
+		res, _, err := ar.q.Query(context.WithValue(ctx, datasource.TokenKey, ar.groupAuthToken), query, ts)
 		return res.Data, err
 	}
 
@@ -754,7 +764,7 @@ func (ar *AlertingRule) restore(ctx context.Context, q datasource.Querier, ts ti
 	expr := fmt.Sprintf("default_rollup(%s{%s%s}[%ds])",
 		alertForStateMetricName, nameStr, labelsFilter, int(lookback.Seconds()))
 
-	res, _, err := q.Query(ctx, expr, ts)
+	res, _, err := q.Query(context.WithValue(ctx, datasource.TokenKey, ar.groupAuthToken), expr, ts)
 	if err != nil {
 		return fmt.Errorf("failed to execute restore query %q: %w ", expr, err)
 	}

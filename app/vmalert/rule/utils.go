@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmalert/datasource"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/auth"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/prompbmarshal"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promrelabel"
 )
@@ -111,4 +113,50 @@ func isPartialResponse(res datasource.Result) bool {
 		return true
 	}
 	return false
+}
+
+func addTenantLabelToTSS(auth *auth.Token, tss []prompbmarshal.TimeSeries) {
+	if auth == nil {
+		return
+	}
+	accountIDStr := strconv.FormatUint(uint64(auth.AccountID), 10)
+	projectIDStr := strconv.FormatUint(uint64(auth.ProjectID), 10)
+	for i := range tss {
+		ts := &tss[i]
+		hasAccountID, hasProjectID := false, false
+		for _, label := range ts.Labels {
+			labelName := label.Name
+			if labelName == "vm_account_id" {
+				hasAccountID = true
+				label.Value = accountIDStr
+				continue
+			}
+			if labelName == "vm_project_id" {
+				hasProjectID = true
+				label.Value = projectIDStr
+				continue
+			}
+		}
+		needAdd := 0
+		if !hasAccountID {
+			needAdd++
+		}
+		if !hasProjectID {
+			needAdd++
+		}
+		if needAdd > 0 {
+			if !hasAccountID {
+				ts.Labels = append(ts.Labels, prompbmarshal.Label{
+					Name:  "vm_account_id",
+					Value: accountIDStr,
+				})
+			}
+			if !hasProjectID {
+				ts.Labels = append(ts.Labels, prompbmarshal.Label{
+					Name:  "vm_project_id",
+					Value: projectIDStr,
+				})
+			}
+		}
+	}
 }

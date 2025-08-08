@@ -275,3 +275,176 @@ groups:
 		Want: 1,
 	})
 }
+
+func TestClusterVmalertMultitenants(t *testing.T) {
+	tc := apptest.NewTestCase(t)
+	defer tc.Stop()
+
+	// Start a basic cluster
+	cluster := tc.MustStartCluster(&apptest.ClusterOptions{
+		Vmstorage1Instance: "vmalert-vmstorage",
+		Vmstorage1Flags: []string{
+			"-storageDataPath=" + filepath.Join(tc.Dir(), "vmstorage"),
+		},
+		VminsertInstance: "vmalert-vminsert",
+		VmselectInstance: "vmalert-vmselect",
+	})
+
+	// Insert some test data for alerting rules to evaluate
+	testData := []string{
+		"up{job=\"test\",instance=\"localhost:8080\"} 1",
+		"up{job=\"test\",instance=\"localhost:8081\"} 0",
+		"cpu_usage{job=\"test\",instance=\"localhost:8080\"} 85",
+		"cpu_usage{job=\"test\",instance=\"localhost:8081\"} 45",
+	}
+
+	cluster.PrometheusAPIV1ImportPrometheus(t, testData, apptest.QueryOpts{Tenant: "1:1"})
+	cluster.PrometheusAPIV1ImportPrometheus(t, testData, apptest.QueryOpts{Tenant: "1:2"})
+	cluster.ForceFlush(t)
+
+	// Define alerting and recording rules
+	rulesConfig := `
+groups:
+  - name: test_alerts_A
+    interval: 1s
+    tenant: "1:1"
+    rules:
+      - alert: InstanceDown
+        expr: up == 0
+        for: 0s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Instance {{ $labels.instance }} is down"
+          description: "Instance {{ $labels.instance }} has been down for more than 0 seconds."
+
+  - name: test_alterts_B
+    interval: 1s
+    tenant: "1:2"
+    rules:
+      - alert: HighCPUUsage
+        expr: cpu_usage > 80
+        for: 0s
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage on {{ $labels.instance }}"
+          description: "CPU usage is {{ $value }}% on instance {{ $labels.instance }}"
+
+  - name: test_recording_A
+    interval: 1s
+    tenant: "1:1"
+    rules:
+      - record: job:up:avg
+        expr: avg by (job) (up)
+
+  - name: test_recording_B
+    interval: 1s
+    tenant: "1:2"
+    rules:
+      - record: job:cpu_usage:avg
+        expr: avg by (job) (cpu_usage)
+`
+
+	// Start vmalert with the cluster as datasource and remote write target
+	vmalertFlags := []string{
+		"-datasource.url=http://" + cluster.Vmselect.HTTPAddr() + "/select/multitenant/prometheus",
+		"-remoteWrite.url=http://" + cluster.Vminsert.HTTPAddr() + "/insert/multitenant/prometheus",
+		"-evaluationInterval=5s",
+		"-remoteWrite.flushInterval=1s", // Flush more frequently for testing
+		"-external.url=http://localhost:8880",
+		"-notifier.blackhole", // Use blackhole notifier for testing
+	}
+
+	vmalert := tc.MustStartVmalert("vmalert-multi-tenant", vmalertFlags, rulesConfig)
+
+	// Wait for vmalert to load rules
+	vmalert.WaitForRulesLoad(t, 4) // 2 alerting rules + 2 recording rules
+
+	// Verify that recording rules are written to the cluster
+	tc.Assert(&apptest.AssertOptions{
+		Msg: "recording rules `job:cpu_usage:avg` should be written to tenant `1:2`",
+		Got: func() any {
+			cluster.ForceFlush(t)
+			// Doesn't has `job:cpu_usage:avg` recording rules on `1:1` tenant.
+			response := cluster.PrometheusAPIV1Query(t, "job:cpu_usage:avg", apptest.QueryOpts{Tenant: "1:1"})
+			if len(response.Data.Result) != 0 {
+				return 0
+			}
+			// Has `job:cpu_usage:avg` recording rules on `1:2` tenant.
+			response = cluster.PrometheusAPIV1Query(t, "job:cpu_usage:avg", apptest.QueryOpts{Tenant: "1:2"})
+			if len(response.Data.Result) > 0 {
+				return response.Data.Result[0].Sample.Value
+			}
+			return 0
+		},
+		Want:    65.0,
+		Retries: 30,
+		Period:  2 * time.Second,
+	})
+
+	tc.Assert(&apptest.AssertOptions{
+		Msg: "recording rules `job:up:avg` should be written to tenant `1:1`",
+		Got: func() any {
+			cluster.ForceFlush(t)
+			// Doesn't has `job:up:avg` recording rules on `1:2` tenant.
+			response := cluster.PrometheusAPIV1Query(t, "job:up:avg", apptest.QueryOpts{Tenant: "1:2"})
+			if len(response.Data.Result) != 0 {
+				return 0
+			}
+			// Has `job:up:avg` recording rules on `1:1` tenant.
+			response = cluster.PrometheusAPIV1Query(t, "job:up:avg", apptest.QueryOpts{Tenant: "1:1"})
+			if len(response.Data.Result) > 0 {
+				return response.Data.Result[0].Sample.Value
+			}
+			return 0
+		},
+		Want:    0.5,
+		Retries: 30,
+		Period:  2 * time.Second,
+	})
+
+	tc.Assert(&apptest.AssertOptions{
+		Msg: "check alters generate successfully",
+		Got: func() any {
+			cluster.ForceFlush(t)
+			if vmalert.GetMetric(t, "vmalert_alerts_fired_total") >= 2 {
+				return 1
+			}
+			return 0
+		},
+		Want:    1,
+		Retries: 30,
+		Period:  2 * time.Second,
+	})
+
+	tc.Assert(&apptest.AssertOptions{
+		Msg: "check alters remote write correclty",
+		Got: func() any {
+			cluster.ForceFlush(t)
+			response := cluster.PrometheusAPIV1Query(t, "count(ALERTS[1h])", apptest.QueryOpts{Tenant: "1:2"})
+			if len(response.Data.Result) > 0 {
+				return response.Data.Result[0].Sample.Value
+			}
+			return 0
+		},
+		Want:    1.0,
+		Retries: 30,
+		Period:  2 * time.Second,
+	})
+
+	tc.Assert(&apptest.AssertOptions{
+		Msg: "check alters remote write correclty",
+		Got: func() any {
+			cluster.ForceFlush(t)
+			response := cluster.PrometheusAPIV1Query(t, "count(ALERTS[1h])", apptest.QueryOpts{Tenant: "1:1"})
+			if len(response.Data.Result) > 0 {
+				return response.Data.Result[0].Sample.Value
+			}
+			return 0
+		},
+		Want:    1.0,
+		Retries: 30,
+		Period:  2 * time.Second,
+	})
+}

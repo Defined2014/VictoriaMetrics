@@ -10,6 +10,7 @@ import (
 	"github.com/VictoriaMetrics/metrics"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmalert/remotewrite"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/auth"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/prompbmarshal"
 )
@@ -33,6 +34,9 @@ type Rule interface {
 	unregisterMetrics()
 	// register Rule metrics with the given group
 	registerMetrics(set *metrics.Set)
+
+	// get rule auth token
+	authToken() *auth.Token
 }
 
 var errDuplicate = errors.New("result contains metrics with the same labelset during evaluation. See https://docs.victoriametrics.com/victoriametrics/vmalert/#series-with-the-same-labelset for details")
@@ -165,6 +169,9 @@ func replayRule(r Rule, start, end time.Time, rw remotewrite.RWClient, replayRul
 	}
 	if len(tss) < 1 {
 		return 0, nil
+	}
+	if r.authToken() != nil {
+		addTenantLabelToTSS(r.authToken(), tss)
 	}
 	var n int
 	for _, ts := range tss {

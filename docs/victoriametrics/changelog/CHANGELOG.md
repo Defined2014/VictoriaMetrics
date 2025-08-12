@@ -20,6 +20,8 @@ See also [LTS releases](https://docs.victoriametrics.com/victoriametrics/lts-rel
 
 ## [v1.122.2]
 
+* BUGFIX: [vmsingle](https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/) and `vmstorage` in [VictoriaMetrics cluster](https://docs.victoriametrics.com/victoriametrics/cluster-victoriametrics/): prevent performance degradation on hitting daily or hourly series cardinality limits. See this issue [9554](https://github.com/VictoriaMetrics/VictoriaMetrics/issues/9554) for details.
+
 * BUGFIX: [MetricsQL](https://docs.victoriametrics.com/victoriametrics/metricsql/): gracefully handle `histogram_quantile` calculation for histograms where buckets are created on demand. This change isn't needed for users who use native instrumentation SDKs for metrics from [VictoriaMetrics](https://github.com/VictoriaMetrics/metrics), [Prometheus](https://prometheus.io/docs/instrumenting/clientlibs/) or [OpenTelemetry](https://opentelemetry.io/docs/languages/).
 
 * BUGFIX: [MetricsQL](https://docs.victoriametrics.com/victoriametrics/metricsql/): return a proper error message when the function argument is expected to be a string or scalar.

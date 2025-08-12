@@ -20,6 +20,8 @@ See also [LTS releases](https://docs.victoriametrics.com/victoriametrics/lts-rel
 
 ## [v1.122.2]
 
+* BUGFIX: [MetricsQL](https://docs.victoriametrics.com/victoriametrics/metricsql/): gracefully handle `histogram_quantile` calculation for histograms where buckets are created on demand. This change isn't needed for users who use native instrumentation SDKs for metrics from [VictoriaMetrics](https://github.com/VictoriaMetrics/metrics), [Prometheus](https://prometheus.io/docs/instrumenting/clientlibs/) or [OpenTelemetry](https://opentelemetry.io/docs/languages/).
+
 * BUGFIX: [MetricsQL](https://docs.victoriametrics.com/victoriametrics/metricsql/): return a proper error message when the function argument is expected to be a string or scalar.
 
 * BUGFIX: [vmalert](https://docs.victoriametrics.com/victoriametrics/vmalert/): fix potential data race and missing firing states when replaying alerting rule with `-replay.ruleEvaluationConcurrency>1`.

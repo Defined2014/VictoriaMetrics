@@ -20,6 +20,8 @@ See also [LTS releases](https://docs.victoriametrics.com/victoriametrics/lts-rel
 
 ## [v1.122.2]
 
+* BUGFIX: [MetricsQL](https://docs.victoriametrics.com/victoriametrics/metricsql/): return a proper error message when the function argument is expected to be a string or scalar.
+
 * BUGFIX: [vmalert](https://docs.victoriametrics.com/victoriametrics/vmalert/): fix potential data race and missing firing states when replaying alerting rule with `-replay.ruleEvaluationConcurrency>1`.
 
 * BUGFIX: [vmalert](https://docs.victoriametrics.com/victoriametrics/vmalert/): fix the `{{ $activeAt }}` variable value in annotation templating when the alert has already triggered. See this issue [#9543](https://github.com/VictoriaMetrics/VictoriaMetrics/issues/9543) for details.

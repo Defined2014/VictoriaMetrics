@@ -18,6 +18,10 @@ See also [LTS releases](https://docs.victoriametrics.com/victoriametrics/lts-rel
 
 ## tip
 
+## [v1.122.2]
+
+* BUGFIX: [vmbackup](https://docs.victoriametrics.com/vmbackup/), [vmbackupmanager](https://docs.victoriametrics.com/vmbackupmanager/): allow enabling checksum calculation for PUT requests by using `-s3ChecksumAlgorithm` command-line flag. This is required for S3 configurations with WORM being enabled. See [#9532](https://github.com/VictoriaMetrics/VictoriaMetrics/issues/9532).
+
 ## [v1.122.1]
 
 * BUGFIX: [vmauth](https://docs.victoriametrics.com/victoriametrics/vmauth/): do not configure `-httpListenAddr.useProxyProtocol` for `-httpInternalListenAddr`. See this issue [#9515](https://github.com/VictoriaMetrics/VictoriaMetrics/issues/9515) for details.

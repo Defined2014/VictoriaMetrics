@@ -20,6 +20,8 @@ See also [LTS releases](https://docs.victoriametrics.com/victoriametrics/lts-rel
 
 ## [v1.122.2]
 
+* BUGFIX: [vmagent](https://docs.victoriametrics.com/vmagent/): treat single `remoteWrite.disableOnDiskQueue` flag the same way as if it is explicitly specified for each remote write url. See [#9565](https://github.com/VictoriaMetrics/VictoriaMetrics/issues/9565) for details.
+
 * BUGFIX: [vmauth](https://docs.victoriametrics.com/victoriametrics/vmauth/): properly read proxy-protocol header. See this PR [#9546](https://github.com/VictoriaMetrics/VictoriaMetrics/pull/9546) for details.
 
 * BUGFIX: [vmselect](https://docs.victoriametrics.com/victoriametrics/cluster-victoriametrics/) in [VictoriaMetrics cluster](https://docs.victoriametrics.com/victoriametrics/cluster-victoriametrics/): prevent resource leak on partial responses for `/federate` API requests. This this PR [9536](https://github.com/VictoriaMetrics/VictoriaMetrics/pull/9536) for details. Thanks to the @fxrlv.

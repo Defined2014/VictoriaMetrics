@@ -218,6 +218,7 @@ func (g *Group) restore(ctx context.Context, qb datasource.QuerierBuilder, ts ti
 		if !ok {
 			continue
 		}
+		ar.logDebugf(ts, nil, "out restore function, ar.For: %d, alerts: %d", ar.For, len(ar.alerts))
 		if ar.For < 1 {
 			continue
 		}

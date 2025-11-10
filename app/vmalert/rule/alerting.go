@@ -763,6 +763,7 @@ func firingAlertStaleTimeSeries(ls map[string]string, timestamp int64) []prompbm
 // based on previously written time series `alertForStateMetricName`.
 // Only rules with For > 0 can be restored.
 func (ar *AlertingRule) restore(ctx context.Context, q datasource.Querier, ts time.Time, lookback time.Duration) error {
+	ar.logDebugf(ts, nil, "in restore function, ar.For: %d, alerts: %d", ar.For, len(ar.alerts))
 	if ar.For < 1 {
 		return nil
 	}
@@ -812,9 +813,11 @@ func (ar *AlertingRule) restore(ctx context.Context, q datasource.Querier, ts ti
 		id := hash(labelSet)
 		a, ok := ar.alerts[id]
 		if !ok {
+			ar.logDebugf(ts, a, "no matching alert found for restored series with labels %v", labelSet)
 			continue
 		}
 		if a.Restored || a.State != notifier.StatePending {
+			ar.logDebugf(ts, nil, "isRestored: %t, state: %q - skipping", a.Restored, a.State.String())
 			continue
 		}
 		a.ActiveAt = time.Unix(int64(series.Values[0]), 0)

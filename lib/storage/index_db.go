@@ -990,7 +990,7 @@ func (is *indexSearch) searchTenantsOnDate(tenants map[string]struct{}, date uin
 			}
 		}
 		loopsPaceLimiter++
-		_, prefix, accountID, projectID, err := unmarshalCommonPrefix(ts.Item)
+		tail, prefix, accountID, projectID, err := unmarshalCommonPrefix(ts.Item)
 		if err != nil {
 			return err
 		}
@@ -998,8 +998,15 @@ func (is *indexSearch) searchTenantsOnDate(tenants map[string]struct{}, date uin
 			// Reached the end of enteris with the needed prefix.
 			break
 		}
-		tenant := fmt.Sprintf("%d:%d", accountID, projectID)
-		tenants[tenant] = struct{}{}
+		// unmarshal date.
+		keyDate := uint64(0)
+		if len(tail) >= 8 {
+			keyDate = encoding.UnmarshalUint64(tail)
+		}
+		if date == 0 || keyDate == date {
+			tenant := fmt.Sprintf("%d:%d", accountID, projectID)
+			tenants[tenant] = struct{}{}
+		}
 		// Seek for the next (accountID, projectID)
 		projectID++
 		if projectID == 0 {

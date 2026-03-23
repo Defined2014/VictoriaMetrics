@@ -63,9 +63,10 @@ type Storage struct {
 	// See https://github.com/VictoriaMetrics/VictoriaMetrics/issues/1401
 	nextRotationTimestamp atomic.Int64
 
-	path           string
-	cachePath      string
-	retentionMsecs int64
+	path            string
+	cachePath       string
+	retentionMsecs  int64
+	retentionPolicy *retentionPolicy
 
 	// lock file for exclusive access to the storage on the given path.
 	flockF *os.File
@@ -186,6 +187,7 @@ type accountProjectKey struct {
 // OpenOptions optional args for MustOpenStorage
 type OpenOptions struct {
 	Retention             time.Duration
+	RetentionRules        []string
 	MaxHourlySeries       int
 	MaxDailySeries        int
 	DisablePerDayIndex    bool
@@ -208,6 +210,11 @@ func MustOpenStorage(path string, opts OpenOptions) *Storage {
 		retentionMsecs: retention.Milliseconds(),
 		stopCh:         make(chan struct{}),
 	}
+	rp, err := newRetentionPolicy(retention, opts.RetentionRules)
+	if err != nil {
+		logger.Panicf("FATAL: cannot parse retention rules from -retentionRule: %s", err)
+	}
+	s.retentionPolicy = rp
 	fs.MustMkdirIfNotExist(path)
 
 	// Check whether the cache directory must be removed
@@ -334,6 +341,21 @@ func MustOpenStorage(path string, opts OpenOptions) *Storage {
 // RetentionMsecs returns retentionMsecs for s.
 func (s *Storage) RetentionMsecs() int64 {
 	return s.retentionMsecs
+}
+
+func (s *Storage) retentionMsecsForTenant(accountID, projectID uint32) int64 {
+	if s.retentionPolicy == nil {
+		return s.retentionMsecs
+	}
+	return s.retentionPolicy.retentionMsecsForTenant(accountID, projectID)
+}
+
+func (s *Storage) retentionDeadlineForTenant(nowMsecs int64, accountID, projectID uint32) int64 {
+	minTimestamp := nowMsecs - s.retentionMsecsForTenant(accountID, projectID)
+	if minTimestamp < 0 {
+		return 0
+	}
+	return minTimestamp
 }
 
 var maxTSIDCacheSize int
@@ -1870,6 +1892,7 @@ func (s *Storage) add(rows []rawRow, dstMrs []*MetricRow, mrs []MetricRow, preci
 	var seriesRepopulated uint64
 
 	minTimestamp, maxTimestamp := s.tb.getMinMaxTimestamps()
+	nowMsecs := int64(fasttime.UnixTimestamp() * 1000)
 
 	var genTSID generationTSID
 
@@ -1906,6 +1929,19 @@ func (s *Storage) add(rows []rawRow, dstMrs []*MetricRow, mrs []MetricRow, preci
 			}
 			s.tooBigTimestampRows.Add(1)
 			continue
+		}
+		accountID, projectID, ok := getAccountProjectFromMetricNameRaw(mr.MetricNameRaw)
+		if ok {
+			tenantMinTimestamp := s.retentionDeadlineForTenant(nowMsecs, accountID, projectID)
+			if mr.Timestamp < tenantMinTimestamp {
+				if firstWarn == nil {
+					metricName := getUserReadableMetricName(mr.MetricNameRaw)
+					firstWarn = fmt.Errorf("cannot insert row with too small timestamp %d outside the retention for accountID=%d, projectID=%d; minimum allowed timestamp is %d; metricName: %s",
+						mr.Timestamp, accountID, projectID, tenantMinTimestamp, metricName)
+				}
+				s.tooSmallTimestampRows.Add(1)
+				continue
+			}
 		}
 		dstMrs[j] = mr
 		r := &rows[j]
@@ -2119,6 +2155,15 @@ func getUserReadableMetricName(metricNameRaw []byte) string {
 		return fmt.Sprintf("cannot unmarshal metricNameRaw %q: %s", metricNameRaw, err)
 	}
 	return mn.String()
+}
+
+func getAccountProjectFromMetricNameRaw(metricNameRaw []byte) (uint32, uint32, bool) {
+	if len(metricNameRaw) < 8 {
+		return 0, 0, false
+	}
+	accountID := encoding.UnmarshalUint32(metricNameRaw)
+	projectID := encoding.UnmarshalUint32(metricNameRaw[4:])
+	return accountID, projectID, true
 }
 
 func (s *Storage) prefillNextIndexDB(idbNext *indexDB, rows []rawRow, mrs []*MetricRow) error {

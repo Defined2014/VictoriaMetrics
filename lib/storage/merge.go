@@ -17,11 +17,12 @@ import (
 //
 // rowsMerged is atomically updated with the number of merged rows during the merge.
 func mergeBlockStreams(ph *partHeader, bsw *blockStreamWriter, bsrs []*blockStreamReader, stopCh <-chan struct{}, dmis *uint64set.Set, retentionDeadline int64,
+	retentionDeadlineByTenant func(accountID, projectID uint32) int64,
 	rowsMerged, rowsDeleted *atomic.Uint64, useSparseCache bool) error {
 	ph.Reset()
 
 	bsm := bsmPool.Get().(*blockStreamMerger)
-	bsm.Init(bsrs, retentionDeadline, useSparseCache)
+	bsm.Init(bsrs, retentionDeadline, retentionDeadlineByTenant, useSparseCache)
 	err := mergeBlockStreamsInternal(ph, bsw, bsm, stopCh, dmis, rowsMerged, rowsDeleted)
 	bsm.reset()
 	bsmPool.Put(bsm)

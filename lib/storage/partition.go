@@ -1577,9 +1577,15 @@ func (pt *partition) mergePartsInternal(dstPartPath string, bsw *blockStreamWrit
 		logger.Panicf("BUG: unknown partType=%d", dstPartType)
 	}
 	retentionDeadline := currentTimestamp - pt.s.retentionMsecs
+	var retentionDeadlineByTenant func(accountID, projectID uint32) int64
+	if pt.s.retentionPolicy != nil && pt.s.retentionPolicy.hasRules() {
+		retentionDeadlineByTenant = func(accountID, projectID uint32) int64 {
+			return pt.s.retentionDeadlineForTenant(currentTimestamp, accountID, projectID)
+		}
+	}
 	activeMerges.Add(1)
 	dmis := pt.s.getDeletedMetricIDs()
-	err := mergeBlockStreams(&ph, bsw, bsrs, stopCh, dmis, retentionDeadline, rowsMerged, rowsDeleted, useSparseCache)
+	err := mergeBlockStreams(&ph, bsw, bsrs, stopCh, dmis, retentionDeadline, retentionDeadlineByTenant, rowsMerged, rowsDeleted, useSparseCache)
 	activeMerges.Add(-1)
 	mergesCount.Add(1)
 	if err != nil {

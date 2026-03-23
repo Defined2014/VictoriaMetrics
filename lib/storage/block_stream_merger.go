@@ -15,6 +15,8 @@ type blockStreamMerger struct {
 
 	// Blocks with smaller timestamps are removed because of retention.
 	retentionDeadline int64
+	// Optional per-tenant retention callback for dynamic deadline lookup.
+	retentionDeadlineByTenant func(accountID, projectID uint32) int64
 
 	// Whether the call to NextBlock must be no-op.
 	nextBlockNoop bool
@@ -35,15 +37,17 @@ func (bsm *blockStreamMerger) reset() {
 	bsm.bsrHeap = bsm.bsrHeap[:0]
 
 	bsm.retentionDeadline = 0
+	bsm.retentionDeadlineByTenant = nil
 	bsm.nextBlockNoop = false
 	bsm.err = nil
 	bsm.useSparseCache = false
 }
 
 // Init initializes bsm with the given bsrs.
-func (bsm *blockStreamMerger) Init(bsrs []*blockStreamReader, retentionDeadline int64, useSparseCache bool) {
+func (bsm *blockStreamMerger) Init(bsrs []*blockStreamReader, retentionDeadline int64, retentionDeadlineByTenant func(accountID, projectID uint32) int64, useSparseCache bool) {
 	bsm.reset()
 	bsm.retentionDeadline = retentionDeadline
+	bsm.retentionDeadlineByTenant = retentionDeadlineByTenant
 	for _, bsr := range bsrs {
 		if bsr.NextBlock() {
 			bsm.bsrHeap = append(bsm.bsrHeap, bsr)
@@ -66,7 +70,10 @@ func (bsm *blockStreamMerger) Init(bsrs []*blockStreamReader, retentionDeadline 
 	bsm.useSparseCache = useSparseCache
 }
 
-func (bsm *blockStreamMerger) getRetentionDeadline(_ *blockHeader) int64 {
+func (bsm *blockStreamMerger) getRetentionDeadline(bh *blockHeader) int64 {
+	if bsm.retentionDeadlineByTenant != nil {
+		return bsm.retentionDeadlineByTenant(bh.TSID.AccountID, bh.TSID.ProjectID)
+	}
 	return bsm.retentionDeadline
 }
 

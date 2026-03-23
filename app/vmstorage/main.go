@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/envflag"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/flagutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/fs"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/fs/fscore"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/httpserver"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/mergeset"
@@ -30,10 +32,11 @@ import (
 )
 
 var (
-	retentionPeriod  = flagutil.NewRetentionDuration("retentionPeriod", "1", "Data with timestamps outside the retentionPeriod is automatically deleted. The minimum retentionPeriod is 24h or 1d. See also -retentionFilter")
-	retentionRules   = flagutil.NewArrayString("retentionRule", "Retention rule in the format 'matcher:duration', where matcher is a comma-separated list of account/project matchers. Supported matchers: account=<id>, account!=<id>, project=<id>, project!=<id>. Example: -retentionRule='account=1,project!=999:7d'.")
-	httpListenAddrs  = flagutil.NewArrayString("httpListenAddr", "Address to listen for incoming http requests. See also -httpListenAddr.useProxyProtocol")
-	useProxyProtocol = flagutil.NewArrayBool("httpListenAddr.useProxyProtocol", "Whether to use proxy protocol for connections accepted at the given -httpListenAddr . "+
+	retentionPeriod   = flagutil.NewRetentionDuration("retentionPeriod", "1", "Data with timestamps outside the retentionPeriod is automatically deleted. The minimum retentionPeriod is 24h or 1d. See also -retentionFilter")
+	retentionRules    = flagutil.NewArrayString("retentionRule", "Retention rule in the format 'matcher:duration', where matcher is a comma-separated list of account/project matchers. Supported matchers: account=<id>, account!=<id>, project=<id>, project!=<id>. Example: -retentionRule='account=1,project!=999:7d'.")
+	retentionRuleFile = flag.String("retentionRuleFile", "", "Optional path to a file with retention rules in the format matcher:duration, one rule per line. The file is reloaded on SIGHUP.")
+	httpListenAddrs   = flagutil.NewArrayString("httpListenAddr", "Address to listen for incoming http requests. See also -httpListenAddr.useProxyProtocol")
+	useProxyProtocol  = flagutil.NewArrayBool("httpListenAddr.useProxyProtocol", "Whether to use proxy protocol for connections accepted at the given -httpListenAddr . "+
 		"See https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt . "+
 		"With enabled proxy protocol http server cannot serve regular /metrics endpoint. Use -pushmetrics.url for metrics pushing")
 	storageDataPath   = flag.String("storageDataPath", "vmstorage-data", "Path to storage data")
@@ -138,9 +141,13 @@ func main() {
 	}
 	logger.Infof("opening storage at %q with -retentionPeriod=%s", *storageDataPath, retentionPeriod)
 	startTime := time.Now()
+	rules, err := getRetentionRules()
+	if err != nil {
+		logger.Fatalf("cannot load retention rules: %s", err)
+	}
 	opts := storage.OpenOptions{
 		Retention:             retentionPeriod.Duration(),
-		RetentionRules:        *retentionRules,
+		RetentionRules:        rules,
 		MaxHourlySeries:       *maxHourlySeries,
 		MaxDailySeries:        *maxDailySeries,
 		DisablePerDayIndex:    *disablePerDayIndex,
@@ -184,6 +191,7 @@ func main() {
 	}
 	requestHandler := newRequestHandler(strg)
 	go httpserver.Serve(listenAddrs, requestHandler, httpserver.ServeOptions{UseProxyProtocol: useProxyProtocol})
+	initRetentionRulesReloader(strg)
 
 	pushmetrics.Init()
 	sig := procutil.WaitForSigterm()
@@ -610,6 +618,57 @@ func jsonResponseError(w http.ResponseWriter, err error) {
 	w.WriteHeader(http.StatusInternalServerError)
 	errStr := err.Error()
 	fmt.Fprintf(w, `{"status":"error","msg":%s}`, stringsutil.JSONString(errStr))
+}
+
+func initRetentionRulesReloader(strg *storage.Storage) {
+	sighupCh := procutil.NewSighupChan()
+	go func() {
+		for range sighupCh {
+			logger.Infof("SIGHUP received; reloading retention rules")
+			rules, err := getRetentionRules()
+			if err != nil {
+				logger.Errorf("cannot load retention rules; preserving the previous rules: %s", err)
+				continue
+			}
+			if err := strg.ReloadRetentionRules(rules); err != nil {
+				logger.Errorf("cannot apply retention rules; preserving the previous rules: %s", err)
+				continue
+			}
+			logger.Infof("successfully reloaded retention rules")
+		}
+	}()
+}
+
+func getRetentionRules() ([]string, error) {
+	rules := append([]string{}, *retentionRules...)
+	if *retentionRuleFile == "" {
+		return rules, nil
+	}
+	fileRules, err := getRetentionRulesFromFile(*retentionRuleFile)
+	if err != nil {
+		return nil, err
+	}
+	return append(rules, fileRules...), nil
+}
+
+func getRetentionRulesFromFile(path string) ([]string, error) {
+	data, err := fscore.ReadFileOrHTTP(path)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read -retentionRuleFile=%q: %w", path, err)
+	}
+	sc := bufio.NewScanner(strings.NewReader(string(data)))
+	rules := make([]string, 0)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		rules = append(rules, line)
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("cannot parse -retentionRuleFile=%q: %w", path, err)
+	}
+	return rules, nil
 }
 
 func usage() {

@@ -66,7 +66,7 @@ type Storage struct {
 	path            string
 	cachePath       string
 	retentionMsecs  int64
-	retentionPolicy *retentionPolicy
+	retentionPolicy atomic.Pointer[retentionPolicy]
 
 	// lock file for exclusive access to the storage on the given path.
 	flockF *os.File
@@ -214,7 +214,7 @@ func MustOpenStorage(path string, opts OpenOptions) *Storage {
 	if err != nil {
 		logger.Panicf("FATAL: cannot parse retention rules from -retentionRule: %s", err)
 	}
-	s.retentionPolicy = rp
+	s.retentionPolicy.Store(rp)
 	fs.MustMkdirIfNotExist(path)
 
 	// Check whether the cache directory must be removed
@@ -344,10 +344,11 @@ func (s *Storage) RetentionMsecs() int64 {
 }
 
 func (s *Storage) retentionMsecsForTenant(accountID, projectID uint32) int64 {
-	if s.retentionPolicy == nil {
+	rp := s.retentionPolicy.Load()
+	if rp == nil {
 		return s.retentionMsecs
 	}
-	return s.retentionPolicy.retentionMsecsForTenant(accountID, projectID)
+	return rp.retentionMsecsForTenant(accountID, projectID)
 }
 
 func (s *Storage) retentionDeadlineForTenant(nowMsecs int64, accountID, projectID uint32) int64 {
@@ -356,6 +357,24 @@ func (s *Storage) retentionDeadlineForTenant(nowMsecs int64, accountID, projectI
 		return 0
 	}
 	return minTimestamp
+}
+
+func (s *Storage) hasTenantRetentionRules() bool {
+	rp := s.retentionPolicy.Load()
+	return rp != nil && rp.hasRules()
+}
+
+// ReloadRetentionRules atomically reloads retention rules.
+//
+// If parsing fails, then the previous rules are preserved.
+func (s *Storage) ReloadRetentionRules(rawRules []string) error {
+	retention := time.Duration(s.retentionMsecs) * time.Millisecond
+	rp, err := newRetentionPolicy(retention, rawRules)
+	if err != nil {
+		return err
+	}
+	s.retentionPolicy.Store(rp)
+	return nil
 }
 
 var maxTSIDCacheSize int

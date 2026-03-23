@@ -73,9 +73,9 @@ func TestRetentionPolicyDeadlineForTenant(t *testing.T) {
 		t.Fatalf("unexpected error: %s", err)
 	}
 	s := &Storage{
-		retentionMsecs:  30 * 24 * int64(time.Hour/time.Millisecond),
-		retentionPolicy: p,
+		retentionMsecs: 30 * 24 * int64(time.Hour/time.Millisecond),
 	}
+	s.retentionPolicy.Store(p)
 	nowMsecs := int64((40 * 24 * time.Hour) / time.Millisecond)
 	if got := s.retentionDeadlineForTenant(nowMsecs, 1, 1); got != nowMsecs-(7*24*time.Hour).Milliseconds() {
 		t.Fatalf("unexpected deadline for account 1")

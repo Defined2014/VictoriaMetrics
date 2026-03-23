@@ -1578,7 +1578,7 @@ func (pt *partition) mergePartsInternal(dstPartPath string, bsw *blockStreamWrit
 	}
 	retentionDeadline := currentTimestamp - pt.s.retentionMsecs
 	var retentionDeadlineByTenant func(accountID, projectID uint32) int64
-	if pt.s.retentionPolicy != nil && pt.s.retentionPolicy.hasRules() {
+	if pt.s.hasTenantRetentionRules() {
 		retentionDeadlineByTenant = func(accountID, projectID uint32) int64 {
 			return pt.s.retentionDeadlineForTenant(currentTimestamp, accountID, projectID)
 		}
